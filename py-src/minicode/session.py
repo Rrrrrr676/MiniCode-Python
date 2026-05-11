@@ -221,32 +221,34 @@ def _save_delta(session: SessionData) -> None:
     session._delta_save_count += 1
 
 
+_DELTA_FILE_LIMIT = 20  # Maximum delta files before cleanup
+
+
 def _consolidate_deltas(session: SessionData) -> None:
-    """Merge all delta files into the full session file and clean up.
-    
-    This is called periodically to prevent unbounded delta file growth
-    and to ensure the full session file stays consistent.
-    """
+    """Consolidate delta files into the main session file and enforce limits."""
     delta_dir = _session_delta_dir(session.session_id)
     if not delta_dir.exists():
         return
     
-    # Deltas are already applied during load_session, so just clean up
-    for delta_file in sorted(delta_dir.glob("delta_*.json")):
+    # Clean up delta files
+    delta_files = sorted(delta_dir.glob("delta_*.json"))
+    
+    # If we have too many delta files, remove the oldest ones
+    if len(delta_files) > _DELTA_FILE_LIMIT:
+        to_remove = delta_files[:len(delta_files) - _DELTA_FILE_LIMIT]
+        for delta_path in to_remove:
+            try:
+                delta_path.unlink()
+            except OSError:
+                pass
+        delta_files = delta_files[len(delta_files) - _DELTA_FILE_LIMIT:]
+    
+    # Remove all remaining delta files (they've been consolidated)
+    for delta_path in delta_files:
         try:
-            delta_file.unlink()
+            delta_path.unlink()
         except OSError:
             pass
-    
-    # Try to remove empty delta directory
-    try:
-        delta_dir.rmdir()
-        # Also try to remove parent if empty
-        parent = delta_dir.parent
-        if parent.name == DELTA_DIR_NAME and not any(parent.iterdir()):
-            parent.rmdir()
-    except OSError:
-        pass
     
     session._delta_save_count = 0
 

@@ -17,14 +17,28 @@ _LARGE_OUTPUT_THRESHOLD = 50_000   # Trigger smart truncation above this
 
 # Tool-specific output limits (characters)
 _TOOL_OUTPUT_LIMITS: dict[str, int] = {
+    # File operations
     "read_file": 40_000,
     "grep_files": 20_000,
+    "write_file": 5000,
+    "edit_file": 5000,
+    "multi_edit": 5000,
+    # Command operations
     "run_command": 30_000,
     "run_with_debug": 30_000,
+    # Web/search operations
     "web_fetch": 20_000,
     "web_search": 15_000,
+    "web_fetch_reach": 20_000,
+    "web_search_reach": 15_000,
+    # File listing
     "list_files": 15_000,
     "file_tree": 15_000,
+    # GitHub and RSS
+    "github_search": 15_000,
+    "github_read": 20_000,
+    "rss_read": 15_000,
+    # Testing and other tools
     "code_review": 20_000,
     "diff_viewer": 20_000,
     "db_explorer": 20_000,
@@ -32,6 +46,9 @@ _TOOL_OUTPUT_LIMITS: dict[str, int] = {
     "test_runner": 25_000,
     "api_tester": 15_000,
 }
+
+# Secondary truncation threshold
+_SECONDARY_MAX_OUTPUT = 3000
 
 
 def _smart_truncate_output(output: str, tool_name: str, max_chars: int | None = None) -> str:
@@ -60,8 +77,8 @@ def _smart_truncate_output(output: str, tool_name: str, max_chars: int | None = 
     avg_line_len = total_chars / max(1, total_lines)
     max_lines = int(limit / max(40, avg_line_len))
     
-    if tool_name == "read_file":
-        # Keep head + tail — most important for understanding file structure
+    if tool_name in ("read_file", "github_read"):
+        # Keep head + tail
         head_lines = max(1, int(max_lines * 0.6))
         tail_lines = max(1, max_lines - head_lines)
         head = "\n".join(lines[:head_lines])
@@ -99,7 +116,7 @@ def _smart_truncate_output(output: str, tool_name: str, max_chars: int | None = 
             f"{tail}"
         )
     
-    if tool_name in ("grep_files", "web_search"):
+    if tool_name in ("grep_files", "web_search", "web_search_reach", "github_search"):
         # Keep first N matches + summary
         head = "\n".join(lines[:max_lines])
         omitted = total_lines - max_lines
@@ -118,6 +135,29 @@ def _smart_truncate_output(output: str, tool_name: str, max_chars: int | None = 
         f"{head}\n"
         f"\n... [{omitted} lines omitted (output too large: {total_chars:,} chars)] ...\n\n"
         f"{tail}"
+    )
+
+
+def _truncate_secondary(output: str, max_chars: int) -> str:
+    """Secondary aggressive truncation for very large outputs."""
+    if len(output) <= max_chars:
+        return output
+    
+    lines = output.split("\n")
+    total_lines = len(lines)
+    
+    keep_lines = max(2, int(max_chars / 80))
+    head = max(1, int(keep_lines * 0.7))
+    tail = max(1, keep_lines - head)
+    
+    head_text = "\n".join(lines[:head])
+    tail_text = "\n".join(lines[-tail:])
+    omitted = total_lines - head - tail
+    
+    return (
+        f"{head_text}\n"
+        f"\n... [{omitted} lines omitted, output aggressively truncated to {max_chars} chars] ...\n\n"
+        f"{tail_text}"
     )
 
 
@@ -259,6 +299,9 @@ _READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
     "code_review", "diff_viewer", "db_explorer",
     "web_fetch", "web_search", "api_tester",
     "ask_user", "todo_write",
+    # Agent Reach tools (all read-only)
+    "web_fetch_reach", "web_search_reach",
+    "github_search", "github_read", "rss_read",
 })
 
 

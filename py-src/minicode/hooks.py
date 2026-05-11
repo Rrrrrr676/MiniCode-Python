@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -122,6 +123,7 @@ class HookRegistration:
 class HookManager:
     """Manages hook registrations and executions.
     
+    Thread-safe hook management with lock protection for concurrent access.
     Inspired by Claude Code's hooks system and plugin event listeners.
     """
     
@@ -130,6 +132,7 @@ class HookManager:
             event: [] for event in HookEvent
         }
         self._enabled = True
+        self._lock = threading.RLock()  # Thread-safe lock for hook operations
     
     def register(
         self,
@@ -156,11 +159,13 @@ class HookManager:
             description=description,
         )
         
-        self._hooks[event].append(registration)
+        with self._lock:
+            self._hooks[event].append(registration)
         
         def unregister():
-            if registration in self._hooks[event]:
-                self._hooks[event].remove(registration)
+            with self._lock:
+                if registration in self._hooks[event]:
+                    self._hooks[event].remove(registration)
         
         return unregister
     

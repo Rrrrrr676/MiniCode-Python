@@ -66,7 +66,7 @@ def parse_local_tool_shortcut(user_input: str) -> dict | None:
         }
 
     if user_input.startswith("/cmd "):
-        payload = user_input[len("/cmd ") :].strip()
+        payload = user_input[len("/cmd "):].strip()
         cwd, separator, command_text = payload.partition("::")
         text = command_text.strip() if separator else payload
         command_cwd = cwd.strip() if separator else None
@@ -75,6 +75,17 @@ def parse_local_tool_shortcut(user_input: str) -> dict | None:
         return {
             "toolName": "run_command",
             "input": {"command": text, "cwd": command_cwd or None},
+        }
+
+    if user_input.startswith("/multi "):
+        payload = user_input[len("/multi "):].strip()
+        parts = payload.split(" ", 1)
+        if len(parts) < 2:
+            return None
+        pattern, task = parts[0], parts[1]
+        return {
+            "toolName": "multi_agent_orchestrate",
+            "input": {"pattern": pattern, "task": task},
         }
 
     return None

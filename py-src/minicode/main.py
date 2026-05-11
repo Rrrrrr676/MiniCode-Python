@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import os
 from pathlib import Path
@@ -12,6 +13,9 @@ from minicode.history import load_history_entries, save_history_entries
 from minicode.local_tool_shortcuts import parse_local_tool_shortcut
 from minicode.manage_cli import maybe_handle_management_command
 from minicode.model_registry import create_model_adapter, detect_provider, format_model_status, format_model_list
+from minicode.agent_router import get_agent_router, reset_agent_router
+from minicode.model_switcher import ModelSwitcher, SwitchResult
+from minicode.smart_router import SmartRouter, get_smart_router, reset_smart_router
 from minicode.permissions import PermissionManager
 from minicode.prompt import build_system_prompt
 from minicode.tools import create_default_tool_registry
@@ -244,6 +248,20 @@ def main() -> None:
         }
     )
     logger.info("Store initialized with session: %s", app_store.get_state().session_id)
+
+    # Initialize Smart Router for intelligent model routing
+    feedback_path = Path(cwd) / ".minicode" / "routing_feedback.json"
+    current_model_name = runtime.get("model", "") if runtime else ""
+    switcher = ModelSwitcher(
+        current_model=current_model_name,
+        current_runtime=runtime or {},
+        current_tools=tools,
+    )
+    smart_router = SmartRouter(
+        switcher=switcher,
+        feedback_path=feedback_path,
+    )
+    logger.info("Smart router initialized (feedback: %s)", feedback_path)
     
     messages = [
         {
@@ -327,10 +345,55 @@ def main() -> None:
                     )
                     print(result.output)
                     continue
+
+                # Handle smart routing commands
+                if user_input.startswith("/model "):
+                    model_arg = user_input[len("/model ") :].strip()
+                    if model_arg == "status":
+                        info = format_model_status(switcher.current_model, runtime)
+                        print(info)
+                    elif model_arg == "list":
+                        print(format_model_list())
+                    elif model_arg == "route":
+                        report = smart_router.get_performance_report()
+                        print(json.dumps(report, indent=2, default=str))
+                    else:
+                        switch_result = switcher.switch_to(model_arg, reason="manual_switch")
+                        if switch_result.success:
+                            model = switch_result.adapter
+                            print(f"Model switched to {model_arg}")
+                        else:
+                            print(f"Switch failed: {'; '.join(switch_result.errors)}")
+                    _append_transcript(transcript, kind="user", body=user_input)
+                    _append_transcript(transcript, kind="assistant", body=user_input)
+                    continue
+
+                if user_input == "/route":
+                    report = smart_router.get_performance_report()
+                    routing_info = json.dumps(report["routing_stats"], indent=2, default=str)
+                    _append_transcript(transcript, kind="user", body=user_input)
+                    _append_transcript(transcript, kind="assistant", body=routing_info)
+                    print(routing_info)
+                    continue
+
                 _append_transcript(transcript, kind="user", body=user_input)
                 messages.append({"role": "user", "content": user_input})
                 history.append(user_input)
                 save_history_entries(history)
+
+                # Smart routing: analyze task and switch model if needed
+                decision, switch_result = smart_router.route_and_switch(
+                    task_text=user_input,
+                    current_model=switcher.current_model,
+                )
+
+                # Update active model if switched
+                if switch_result and switch_result.success:
+                    model = switch_result.adapter
+                    logger.info("Auto-routed to %s (%s)", decision.selected_model, decision.tier_name)
+                    if sys.stdin.isatty():
+                        print(f"  [Router] Complexity: {decision.profile.complexity.value} -> Using {decision.selected_model}")
+
                 messages[0] = {
                     "role": "system",
                     "content": build_system_prompt(
@@ -355,12 +418,21 @@ def main() -> None:
                     runtime=runtime,
                 )
                 permissions.end_turn()
-                
+
                 # Log context usage after turn
                 if context_mgr:
                     stats = context_mgr.get_stats()
                     logger.debug("After turn: %d tokens (%.0f%%)", stats.total_tokens, stats.usage_percentage)
+
+                # Record task outcome for learning
                 last_assistant = next((message for message in reversed(messages) if message["role"] == "assistant"), None)
+                success = last_assistant is not None and not last_assistant["content"].startswith("Model API error")
+                smart_router.record_task_outcome(
+                    task_text=user_input,
+                    success=success,
+                    tool_errors=0,  # Would be tracked via metrics_collector
+                )
+
                 if last_assistant:
                     _append_transcript(transcript, kind="assistant", body=last_assistant["content"])
                     print(last_assistant["content"])

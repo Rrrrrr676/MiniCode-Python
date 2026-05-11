@@ -60,6 +60,17 @@ def _is_empty_assistant_response(content: str) -> bool:
     return len(content.strip()) == 0
 
 
+def _extract_task_description(messages: list[ChatMessage]) -> str:
+    """Extract the original task description from messages."""
+    for msg in messages:
+        if msg.get("role") == "user" and msg.get("content"):
+            content = str(msg["content"])
+            # Skip nudge messages
+            if not content.startswith("Continue") and not content.startswith("Your last"):
+                return content[:500]
+    return "Unknown task"
+
+
 def _execute_single_tool(
     call: dict,
     tools: ToolRegistry,
@@ -559,3 +570,20 @@ def run_agent_turn(
     finally:
         # Hook: agent turn stopped (always fires, even on exceptions)
         fire_hook_sync(HookEvent.AGENT_STOP, step=step, tool_errors=tool_error_count)
+
+        # Trigger reflection after task completion
+        if reflection_engine is not None:
+            try:
+                task_description = _extract_task_description(messages)
+                reflection = reflection_engine.reflect(
+                    task_description=task_description,
+                    execution_trace=execution_trace,
+                    metrics=metrics_collector,
+                )
+                logger.info(
+                    "Reflection generated: success=%s, confidence=%.2f",
+                    reflection.success,
+                    reflection.confidence,
+                )
+            except Exception as e:
+                logger.warning("Reflection failed: %s", e)

@@ -14,6 +14,20 @@ _background_tasks: dict[str, dict[str, Any]] = {}
 # Task slot management
 _max_slots: int = 5  # Maximum concurrent background tasks
 _slot_callbacks: dict[str, Callable] = {}  # Completion callbacks
+_TASK_TTL = 86400  # 24 hours TTL for completed tasks
+
+
+def _cleanup_expired_tasks() -> None:
+    """Remove completed tasks that have exceeded TTL."""
+    now = time.time()
+    expired = [
+        task_id
+        for task_id, record in _background_tasks.items()
+        if record.get("status") in ("completed", "failed")
+        and now - (record.get("completedAt", record.get("startedAt", 0)) / 1000) > _TASK_TTL
+    ]
+    for task_id in expired:
+        del _background_tasks[task_id]
 
 
 def _is_process_alive(pid: int) -> bool | None:
@@ -103,11 +117,13 @@ def register_background_shell_task(command: str, pid: int, cwd: str) -> Backgrou
 
 def list_background_tasks() -> list[dict[str, Any]]:
     """Return the list of currently tracked background tasks with refreshed status."""
+    _cleanup_expired_tasks()
     return [_refresh_record(record) for record in _background_tasks.values()]
 
 
 def get_background_task(task_id: str) -> dict[str, Any] | None:
     """Get a single background task by ID with refreshed status."""
+    _cleanup_expired_tasks()
     record = _background_tasks.get(task_id)
     if record is None:
         return None

@@ -25,6 +25,8 @@ from minicode.tools.web_fetch import web_fetch_tool
 from minicode.tools.web_search import web_search_tool
 from minicode.tools.write_file import write_file_tool
 from minicode.tools.task import task_tool
+from minicode.tools.reach_tools import get_reach_tools
+from minicode.tools.multi_agent_tool import multi_agent_tool
 
 
 _CORE_TOOLS = [
@@ -63,6 +65,10 @@ _CORE_TOOLS = [
     diff_viewer_tool,
     # Testing
     test_runner_tool,
+    # Agent Reach tools
+    *get_reach_tools(),
+    # Multi-agent orchestration
+    multi_agent_tool,
 ]
 
 def _resolve_tool_profile(runtime: dict | None) -> str:
