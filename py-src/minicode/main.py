@@ -361,6 +361,7 @@ def main() -> None:
                         switch_result = switcher.switch_to(model_arg, reason="manual_switch")
                         if switch_result.success:
                             model = switch_result.adapter
+                            app_store.set("model", model_arg)
                             print(f"Model switched to {model_arg}")
                         else:
                             print(f"Switch failed: {'; '.join(switch_result.errors)}")
@@ -390,6 +391,7 @@ def main() -> None:
                 # Update active model if switched
                 if switch_result and switch_result.success:
                     model = switch_result.adapter
+                    app_store.set("model", decision.selected_model)
                     logger.info("Auto-routed to %s (%s)", decision.selected_model, decision.tier_name)
                     if sys.stdin.isatty():
                         print(f"  [Router] Complexity: {decision.profile.complexity.value} -> Using {decision.selected_model}")

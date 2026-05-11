@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import time
+import hashlib
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Protocol
@@ -165,6 +168,9 @@ def _truncate_secondary(output: str, max_chars: int) -> str:
 # Tool metadata (inspired by Claude Code's Tool type)
 # ---------------------------------------------------------------------------
 
+# Read-only tool names for caching (matches context_manager.py)
+_READ_TOOLS = frozenset({"read_file", "list_files", "grep_files", "file_tree"})
+
 class ToolCapability(str, Enum):
     """Tool capability flags."""
     READ_ONLY = "read_only"
@@ -254,6 +260,7 @@ class ToolResult:
     output: str
     backgroundTask: BackgroundTaskResult | None = None
     awaitUser: bool = False
+    cached: bool = False
 
 
 @dataclass(slots=True)
@@ -319,6 +326,15 @@ class ToolRegistry:
         self._disposer = disposer
         # 工具查找缓存 - O(1) 查找代替 O(n) 遍历
         self._tool_index: dict[str, ToolDefinition] = {t.name: t for t in tools}
+        # 只读工具结果 TTL 缓存
+        self._read_cache: OrderedDict[str, tuple[float, ToolResult]] = OrderedDict()
+        self._read_cache_max = 500
+        self._read_cache_ttl = 5.0
+
+    @staticmethod
+    def _cache_key(tool_name: str, input_data: Any) -> str:
+        raw = f"{tool_name}:{str(input_data)}"
+        return hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()
 
     def list(self) -> list[ToolDefinition]:
         return list(self._tools)
@@ -346,7 +362,24 @@ class ToolRegistry:
         3. Execution error → error result with traceback excerpt
         4. Output too large → smart truncation
         5. Unexpected errors → error result (never propagates to caller)
+        6. Read-only tool cache → TTL cached results avoid repeated IO
         """
+        # Phase 0: Check read cache for read-only tools
+        if tool_name in _READ_TOOLS:
+            key = self._cache_key(tool_name, input_data)
+            now = time.time()
+            if key in self._read_cache:
+                ts, cached_result = self._read_cache[key]
+                if now - ts < self._read_cache_ttl:
+                    self._read_cache.move_to_end(key)
+                    return ToolResult(
+                        ok=cached_result.ok,
+                        output=cached_result.output,
+                        cached=True,
+                    )
+                else:
+                    del self._read_cache[key]
+
         tool = self.find(tool_name)
         if tool is None:
             return ToolResult(ok=False, output=f"Unknown tool: {tool_name}")
@@ -372,6 +405,17 @@ class ToolRegistry:
             # Smart truncation for large outputs
             if result.output and len(result.output) > _LARGE_OUTPUT_THRESHOLD:
                 result.output = _smart_truncate_output(result.output, tool_name)
+            
+            # Store in read cache
+            if tool_name in _READ_TOOLS and result.ok:
+                key = self._cache_key(tool_name, input_data)
+                now = time.time()
+                self._read_cache[key] = (now, ToolResult(
+                    ok=result.ok, output=result.output
+                ))
+                self._read_cache.move_to_end(key)
+                while len(self._read_cache) > self._read_cache_max:
+                    self._read_cache.popitem(last=False)
             
             return result
             

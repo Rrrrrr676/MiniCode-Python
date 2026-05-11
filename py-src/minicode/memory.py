@@ -19,7 +19,8 @@ import math
 import os
 import re
 import time
-from collections import Counter
+import threading
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -732,6 +733,10 @@ class MemoryManager:
             MemoryScope.LOCAL: MemoryFile(scope=MemoryScope.LOCAL),
         }
         self._load_all()
+        self._search_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
+        self._search_cache_lock = threading.Lock()
+        self._search_cache_max = 1000
+        self._search_cache_ttl = 60.0
     
     def _load_all(self) -> None:
         """Load all memory files."""
@@ -914,6 +919,34 @@ class MemoryManager:
         """Ensure directory exists for scope."""
         path = self._get_scope_path(scope)
         path.mkdir(parents=True, exist_ok=True)
+
+    def _cache_search_result(self, query: str, scope: MemoryScope | None, results: list[MemoryEntry]) -> None:
+        """Store search result in LRU cache."""
+        cache_key = f"{scope.value if scope else 'all'}:{query.lower()}"
+        with self._search_cache_lock:
+            if cache_key in self._search_cache:
+                self._search_cache.move_to_end(cache_key)
+            self._search_cache[cache_key] = (time.time(), [e.to_dict() for e in results])
+            while len(self._search_cache) > self._search_cache_max:
+                self._search_cache.popitem(last=False)
+
+    def _get_cached_search(self, query: str, scope: MemoryScope | None) -> list[MemoryEntry] | None:
+        """Get cached search result if valid."""
+        cache_key = f"{scope.value if scope else 'all'}:{query.lower()}"
+        with self._search_cache_lock:
+            if cache_key not in self._search_cache:
+                return None
+            timestamp, cached_dicts = self._search_cache[cache_key]
+            if time.time() - timestamp > self._search_cache_ttl:
+                del self._search_cache[cache_key]
+                return None
+            self._search_cache.move_to_end(cache_key)
+            return [MemoryEntry.from_dict(d) for d in cached_dicts]
+
+    def _invalidate_search_cache(self) -> None:
+        """Clear search cache after mutations."""
+        with self._search_cache_lock:
+            self._search_cache.clear()
     
     def add_entry(
         self,
@@ -957,6 +990,7 @@ class MemoryManager:
 
         self.memories[scope].add_entry(entry)
         self._save_scope(scope)
+        self._invalidate_search_cache()
         return entry
     
     def update_entry(self, scope: MemoryScope, entry_id: str, content: str) -> bool:
@@ -1037,6 +1071,10 @@ class MemoryManager:
         Returns:
             Entries ranked by relevance (TF-IDF + usage + recency)
         """
+        cached = self._get_cached_search(query, scope)
+        if cached is not None:
+            return cached[:limit]
+
         results = []
 
         scopes_to_search = [scope] if scope else list(MemoryScope)
@@ -1068,6 +1106,7 @@ class MemoryManager:
                 seen_content.add(content_key)
                 deduped.append(entry)
 
+        self._cache_search_result(query, scope, deduped)
         return deduped[:limit]
 
     def _score_entry(self, entry: MemoryEntry, query_tokens: list[str]) -> float:
