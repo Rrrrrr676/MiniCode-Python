@@ -13,6 +13,7 @@ Key concepts:
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import time
 from dataclasses import dataclass, field
@@ -98,6 +99,11 @@ class PromptPipeline:
         )
 
     def build(self) -> str:
+        """Assemble the full system prompt with cache boundary marker."""
+        return self._build_cached()
+
+    @functools.lru_cache(maxsize=1)
+    def _build_cached(self) -> str:
         """Assemble the full system prompt with cache boundary marker."""
         parts: list[str] = []
 

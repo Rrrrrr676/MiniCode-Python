@@ -8,6 +8,7 @@ Central orchestration layer that:
 
 from __future__ import annotations
 
+import functools
 import json
 import threading
 import time
@@ -88,6 +89,7 @@ class FeedbackLearner:
         if self._dirty:
             self._save()
 
+    @functools.lru_cache(maxsize=64)
     def get_model_score(self, model: str) -> float:
         """Get performance score for a model (0-1)."""
         perf = self._model_performance.get(model)
