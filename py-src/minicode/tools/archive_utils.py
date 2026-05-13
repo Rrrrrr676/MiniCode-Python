@@ -230,6 +230,11 @@ def _validate_tar_extract(input_data: dict) -> dict:
     destination = input_data.get("destination", "")
     if not isinstance(source, str) or not source.strip():
         raise ValueError("source is required")
+    # Validate source path does not contain path traversal
+    if ".." in source or source.startswith("/"):
+        raise ValueError("source path cannot contain path traversal")
+    if destination and (".." in destination or destination.startswith("/")):
+        raise ValueError("destination path cannot contain path traversal")
     return {"source": source.strip(), "destination": destination.strip() if destination else ""}
 
 
@@ -338,6 +343,11 @@ def _validate_zip_extract(input_data: dict) -> dict:
     destination = input_data.get("destination", "")
     if not isinstance(source, str) or not source.strip():
         raise ValueError("source is required")
+    # Validate source path does not contain path traversal
+    if ".." in source or source.startswith("/"):
+        raise ValueError("source path cannot contain path traversal")
+    if destination and (".." in destination or destination.startswith("/")):
+        raise ValueError("destination path cannot contain path traversal")
     return {"source": source.strip(), "destination": destination.strip() if destination else ""}
 
 

@@ -368,16 +368,24 @@ def create_script_hook(script_path: Path) -> AsyncHookHandler:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await process.communicate()
-            
+            # Timeout to prevent hanging hooks
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                return "Script execution timed out after 30 seconds"
+
             if process.returncode == 0:
                 return stdout.decode("utf-8", errors="replace")
             else:
                 return f"Script failed: {stderr.decode('utf-8', errors='replace')}"
-        
+
         except Exception as e:
             return f"Script execution failed: {e}"
-    
+
     return handler
 
 

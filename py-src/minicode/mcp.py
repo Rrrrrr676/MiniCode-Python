@@ -566,6 +566,13 @@ class StdioMcpClient:
             except OSError:
                 pass  # 进程可能已经退出
             finally:
+                # Close pipes to prevent resource leaks
+                for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except OSError:
+                            pass
                 self.process = None
         
         self.protocol = None

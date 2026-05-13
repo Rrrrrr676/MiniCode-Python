@@ -105,10 +105,23 @@ class SessionPersistence:
             data = json.dumps(state.to_dict(), indent=2, ensure_ascii=False)
             # Compress session data to reduce disk usage (~70% reduction for typical sessions)
             compressed = gzip.compress(data.encode("utf-8"), compresslevel=6)
-            tmp_path = path.with_suffix(".json.gz.tmp")
-            tmp_path.write_bytes(compressed)
-            final_path = path.with_suffix(".json.gz")
-            os.replace(str(tmp_path), str(final_path))
+            # Atomic write using tempfile + os.replace
+            fd, tmp_path_str = tempfile.mkstemp(
+                dir=self._sessions_dir,
+                suffix=".json.gz.tmp",
+                prefix=f"{path.stem}.",
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(compressed)
+                final_path = path.with_suffix(".json.gz")
+                os.replace(tmp_path_str, str(final_path))
+            except Exception:
+                try:
+                    os.unlink(tmp_path_str)
+                except OSError:
+                    pass
+                raise
             self._last_save = now
             logger.debug(
                 "Session saved: %s (%d messages, %d -> %d bytes compressed)",
