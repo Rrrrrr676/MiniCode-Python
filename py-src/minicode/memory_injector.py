@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +20,17 @@ class InjectedMemory:
     source: str  # "search", "tag", "category"
 
 
+# Precompiled keyword sets for fast category matching
+_ARCHITECTURE_KEYWORDS = frozenset({"design", "structure", "api", "architecture", "pattern"})
+_TESTING_KEYWORDS = frozenset({"test", "assert", "verify", "pytest", "unittest", "coverage"})
+_CONVENTION_KEYWORDS = frozenset({"style", "naming", "format", "lint", "convention", "standard"})
+_CODE_KEYWORDS = frozenset({
+    "api", "test", "function", "class", "database", "config",
+    "security", "performance", "git", "docker", "deploy",
+    "refactor", "optimize", "bug", "fix", "feature",
+})
+
+
 class MemoryInjector:
     """Injects relevant memories into agent context based on task content."""
 
@@ -36,6 +48,8 @@ class MemoryInjector:
         self._last_query: str = ""
         self._last_injection_time: float = 0.0
         self._injection_cooldown: float = 30.0  # Seconds between injections
+        # Cache for keyword extraction
+        self._keyword_cache: dict[str, frozenset[str]] = {}
 
     def inject_for_task(
         self,
@@ -194,6 +208,15 @@ class MemoryInjector:
 
         return "\n".join(lines)
 
+    def _extract_keywords(self, text: str) -> frozenset[str]:
+        """Extract keywords from text with caching."""
+        cached = self._keyword_cache.get(text)
+        if cached is not None:
+            return cached
+        words = frozenset(text.lower().split())
+        self._keyword_cache[text] = words
+        return words
+
     def _calculate_relevance(
         self,
         entry: MemoryEntry,
@@ -204,12 +227,12 @@ class MemoryInjector:
         score = 0.5  # Base score
 
         # Boost if memory category matches task type
-        task_lower = task_description.lower()
-        if entry.category == "architecture" and any(kw in task_lower for kw in ["design", "structure", "api"]):
+        task_words = self._extract_keywords(task_description)
+        if entry.category == "architecture" and not task_words.isdisjoint(_ARCHITECTURE_KEYWORDS):
             score += 0.2
-        elif entry.category == "testing" and any(kw in task_lower for kw in ["test", "assert", "verify"]):
+        elif entry.category == "testing" and not task_words.isdisjoint(_TESTING_KEYWORDS):
             score += 0.2
-        elif entry.category == "convention" and any(kw in task_lower for kw in ["style", "naming", "format"]):
+        elif entry.category == "convention" and not task_words.isdisjoint(_CONVENTION_KEYWORDS):
             score += 0.2
 
         # Boost if memory mentions current files
@@ -234,18 +257,9 @@ class MemoryInjector:
         if self._memory is None:
             return []
 
-        # Extract potential tags from task description
-        task_lower = task_description.lower()
-        keywords = []
-
-        # Common code-related keywords
-        code_keywords = [
-            "api", "test", "function", "class", "database", "config",
-            "security", "performance", "git", "docker", "deploy",
-        ]
-        for kw in code_keywords:
-            if kw in task_lower:
-                keywords.append(kw)
+        # Extract potential tags from task description using set intersection
+        task_words = self._extract_keywords(task_description)
+        keywords = list(task_words & _CODE_KEYWORDS)
 
         memories: list[InjectedMemory] = []
         seen: set[str] = set()

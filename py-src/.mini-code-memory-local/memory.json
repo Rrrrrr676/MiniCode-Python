@@ -1,0 +1,16 @@
+{
+  "scope": "local",
+  "last_updated": 1778652077.1660213,
+  "entries": [
+    {
+      "id": "local-1778652077-0",
+      "scope": "local",
+      "category": "test",
+      "content": "Batch save test content",
+      "created_at": 1778652077.165397,
+      "updated_at": 1778652077.165397,
+      "tags": [],
+      "usage_count": 0
+    }
+  ]
+}

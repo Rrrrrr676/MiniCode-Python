@@ -515,6 +515,16 @@ class MemoryEntry:
     usage_count: int = 0  # How often this was referenced
     _cached_tokens: list[str] | None = None  # Precomputed tokens for search
 
+    def __hash__(self) -> int:
+        """Make MemoryEntry hashable for use in sets."""
+        return hash(self.id)
+
+    def __eq__(self, other: object) -> bool:
+        """Equality based on ID for set operations."""
+        if not isinstance(other, MemoryEntry):
+            return NotImplemented
+        return self.id == other.id
+
     def get_tokens(self) -> list[str]:
         """Get precomputed tokens, computing if needed."""
         if self._cached_tokens is None:
@@ -556,11 +566,69 @@ class MemoryEntry:
 
 @dataclass
 class MemoryFile:
-    """Represents a MEMORY.md file content."""
+    """Represents a MEMORY.md file content with optimized indexing."""
     scope: MemoryScope
     entries: list[MemoryEntry] = field(default_factory=list)
     max_entries: int = 200  # Claude Code limit
     max_size_bytes: int = 25 * 1024  # 25KB limit
+    
+    # Search indices for O(1) lookup
+    _id_index: dict[str, MemoryEntry] = field(default_factory=dict, repr=False)
+    _tag_index: dict[str, set[MemoryEntry]] = field(default_factory=dict, repr=False)
+    _category_index: dict[str, list[MemoryEntry]] = field(default_factory=dict, repr=False)
+    _tokens_cache: dict[str, list[str]] = field(default_factory=dict, repr=False)
+    _idf_cache: dict[str, float] | None = field(default=None, repr=False)
+    _avgdl_cache: float = field(default=0.0, repr=False)
+    _cache_dirty: bool = field(default=True, repr=False)
+    
+    def __post_init__(self):
+        """Initialize indices after creation."""
+        self._rebuild_indices()
+    
+    def _rebuild_indices(self) -> None:
+        """Rebuild all search indices."""
+        self._id_index.clear()
+        self._tag_index.clear()
+        self._category_index.clear()
+        self._tokens_cache.clear()
+        
+        for entry in self.entries:
+            self._id_index[entry.id] = entry
+            
+            # Build tag index
+            for tag in entry.tags:
+                if tag not in self._tag_index:
+                    self._tag_index[tag] = set()
+                self._tag_index[tag].add(entry)
+            
+            # Build category index
+            cat = entry.category
+            if cat not in self._category_index:
+                self._category_index[cat] = []
+            self._category_index[cat].append(entry)
+            
+            # Precompute tokens
+            self._tokens_cache[entry.id] = entry.get_tokens()
+        
+        # Precompute IDF and avgdl for BM25
+        if self.entries:
+            entry_tokens = [self._tokens_cache[e.id] for e in self.entries]
+            self._idf_cache = _compute_idf(entry_tokens)
+            self._avgdl_cache = _compute_avgdl(entry_tokens)
+        else:
+            self._idf_cache = {}
+            self._avgdl_cache = 0.0
+        
+        self._cache_dirty = False
+    
+    def _invalidate_cache(self) -> None:
+        """Mark cache as needing rebuild."""
+        self._cache_dirty = True
+    
+    def _ensure_cache_valid(self) -> None:
+        """Rebuild cache if dirty."""
+        if self._cache_dirty:
+            self._rebuild_indices()
     
     @property
     def size_bytes(self) -> int:
@@ -570,40 +638,48 @@ class MemoryFile:
     def add_entry(self, entry: MemoryEntry) -> None:
         """Add entry, respecting limits."""
         self.entries.append(entry)
+        self._invalidate_cache()
         self._enforce_limits()
+        # Ensure cache is rebuilt after limit enforcement
+        self._ensure_cache_valid()
     
     def update_entry(self, entry_id: str, content: str) -> bool:
-        """Update existing entry."""
-        for entry in self.entries:
-            if entry.id == entry_id:
-                entry.content = content
-                entry.updated_at = time.time()
-                entry.invalidate_tokens()
-                return True
+        """Update existing entry using index."""
+        self._ensure_cache_valid()
+        entry = self._id_index.get(entry_id)
+        if entry is not None:
+            entry.content = content
+            entry.updated_at = time.time()
+            entry.invalidate_tokens()
+            self._invalidate_cache()
+            return True
         return False
     
     def delete_entry(self, entry_id: str) -> bool:
-        """Delete entry."""
-        for i, entry in enumerate(self.entries):
-            if entry.id == entry_id:
-                self.entries.pop(i)
-                return True
+        """Delete entry using index."""
+        self._ensure_cache_valid()
+        entry = self._id_index.get(entry_id)
+        if entry is not None:
+            self.entries.remove(entry)
+            self._invalidate_cache()
+            return True
         return False
     
     def get_entries_by_category(self, category: str) -> list[MemoryEntry]:
-        """Get entries filtered by category."""
-        return [e for e in self.entries if e.category == category]
+        """Get entries filtered by category using index."""
+        self._ensure_cache_valid()
+        return list(self._category_index.get(category, []))
     
     def search(self, query: str) -> list[MemoryEntry]:
         """Search entries by keyword with BM25 relevance scoring.
 
-        Combines BM25 semantic relevance with usage frequency for
-        better result ranking than simple substring matching.
-        Query terms are expanded using code terminology dictionary.
-        Exact tag matches receive highest priority scores.
+        Uses precomputed indices for O(1) lookups and cached BM25
+        statistics for faster repeated searches.
         """
         if not self.entries:
             return []
+
+        self._ensure_cache_valid()
 
         query_tokens = _tokenize(query)
         query_tokens = _expand_query_terms(query_tokens)
@@ -613,15 +689,18 @@ class MemoryFile:
         query_lower = query.lower()
         query_terms = query_lower.split()
 
-        entry_tokens = [entry.get_tokens() for entry in self.entries]
+        # Fast path: exact tag match via index
+        if query_lower in self._tag_index:
+            return list(self._tag_index[query_lower])
 
-        idf = _compute_idf(entry_tokens)
-        avgdl = _compute_avgdl(entry_tokens)
         now = time.time()
+        idf = self._idf_cache
+        avgdl = self._avgdl_cache
 
         scored: list[tuple[float, MemoryEntry]] = []
-        for i, entry in enumerate(self.entries):
-            bm25 = _bm25_score(query_tokens, entry_tokens[i], idf, avgdl)
+        for entry in self.entries:
+            entry_tokens = self._tokens_cache.get(entry.id, entry.get_tokens())
+            bm25 = _bm25_score(query_tokens, entry_tokens, idf, avgdl)
 
             substring_score = 0.0
             content_lower = entry.content.lower()
@@ -663,13 +742,19 @@ class MemoryFile:
     
     def _enforce_limits(self) -> None:
         """Remove oldest entries if exceeding limits."""
+        removed = False
         # Check entry count
         while len(self.entries) > self.max_entries:
             self.entries.pop(0)  # Remove oldest
+            removed = True
         
         # Check size
         while self.size_bytes > self.max_size_bytes and self.entries:
             self.entries.pop(0)
+            removed = True
+        
+        if removed:
+            self._invalidate_cache()
     
     def format_as_markdown(self, include_header: bool = True) -> str:
         """Format as MEMORY.md content."""
@@ -726,7 +811,7 @@ class MemoryPaths:
 
 
 class MemoryManager:
-    """Manages layered memory system."""
+    """Manages layered memory system with optimized indexing and batch I/O."""
     
     def __init__(
         self,
@@ -751,6 +836,13 @@ class MemoryManager:
         self._search_cache_lock = threading.Lock()
         self._search_cache_max = 1000
         self._search_cache_ttl = 60.0
+        
+        # Batch save optimization
+        self._dirty_scopes: set[MemoryScope] = set()
+        self._save_lock = threading.Lock()
+        self._batch_save_interval = 5.0  # seconds
+        self._last_batch_save = time.time()
+        self._batch_save_enabled = True
     
     def _load_all(self) -> None:
         """Load all memory files."""
@@ -961,6 +1053,30 @@ class MemoryManager:
         with self._search_cache_lock:
             self._search_cache.clear()
     
+    def _mark_dirty(self, scope: MemoryScope) -> None:
+        """Mark scope as needing save."""
+        self._dirty_scopes.add(scope)
+        self._invalidate_search_cache()
+    
+    def _maybe_batch_save(self, scope: MemoryScope) -> None:
+        """Save scope immediately or defer for batch."""
+        if not self._batch_save_enabled:
+            self._save_scope(scope)
+            return
+        
+        self._mark_dirty(scope)
+        now = time.time()
+        if now - self._last_batch_save >= self._batch_save_interval:
+            self._flush_dirty_scopes()
+    
+    def _flush_dirty_scopes(self) -> None:
+        """Save all dirty scopes."""
+        with self._save_lock:
+            for scope in list(self._dirty_scopes):
+                self._save_scope(scope)
+            self._dirty_scopes.clear()
+            self._last_batch_save = time.time()
+    
     def add_entry(
         self,
         scope: MemoryScope,
@@ -1002,66 +1118,66 @@ class MemoryManager:
         )
 
         self.memories[scope].add_entry(entry)
-        self._save_scope(scope)
-        self._invalidate_search_cache()
+        self._maybe_batch_save(scope)
         return entry
     
     def update_entry(self, scope: MemoryScope, entry_id: str, content: str) -> bool:
         """Update an existing entry."""
         if self.memories[scope].update_entry(entry_id, content):
-            self._save_scope(scope)
+            self._maybe_batch_save(scope)
             return True
         return False
     
     def delete_entry(self, scope: MemoryScope, entry_id: str) -> bool:
         """Delete an entry."""
         if self.memories[scope].delete_entry(entry_id):
-            self._save_scope(scope)
+            self._maybe_batch_save(scope)
             return True
         return False
 
     def add_tag(self, scope: MemoryScope, entry_id: str, tag: str) -> bool:
-        """Add a tag to an entry."""
-        for entry in self.memories[scope].entries:
-            if entry.id == entry_id:
-                if tag not in entry.tags:
-                    entry.tags.append(tag)
-                    self._save_scope(scope)
-                return True
+        """Add a tag to an entry using index."""
+        self.memories[scope]._ensure_cache_valid()
+        entry = self.memories[scope]._id_index.get(entry_id)
+        if entry is not None:
+            if tag not in entry.tags:
+                entry.tags.append(tag)
+                self.memories[scope]._invalidate_cache()
+                self._maybe_batch_save(scope)
+            return True
         return False
 
     def remove_tag(self, scope: MemoryScope, entry_id: str, tag: str) -> bool:
-        """Remove a tag from an entry."""
-        for entry in self.memories[scope].entries:
-            if entry.id == entry_id:
-                if tag in entry.tags:
-                    entry.tags.remove(tag)
-                    self._save_scope(scope)
-                return True
+        """Remove a tag from an entry using index."""
+        self.memories[scope]._ensure_cache_valid()
+        entry = self.memories[scope]._id_index.get(entry_id)
+        if entry is not None:
+            if tag in entry.tags:
+                entry.tags.remove(tag)
+                self.memories[scope]._invalidate_cache()
+                self._maybe_batch_save(scope)
+            return True
         return False
 
     def search_by_tag(self, scope: MemoryScope, tag: str) -> list[MemoryEntry]:
-        """Search entries by tag."""
-        return [
-            entry for entry in self.memories[scope].entries
-            if tag in entry.tags
-        ]
+        """Search entries by tag using index."""
+        self.memories[scope]._ensure_cache_valid()
+        return list(self.memories[scope]._tag_index.get(tag, set()))
 
     def get_all_tags(self, scope: MemoryScope) -> set[str]:
-        """Get all unique tags in a scope."""
-        tags: set[str] = set()
-        for entry in self.memories[scope].entries:
-            tags.update(entry.tags)
-        return tags
+        """Get all unique tags in a scope using index."""
+        self.memories[scope]._ensure_cache_valid()
+        return set(self.memories[scope]._tag_index.keys())
 
     def get_tags_by_category(self, scope: MemoryScope) -> dict[str, list[str]]:
-        """Get tags grouped by category."""
-        category_tags: dict[str, set[str]] = {}
+        """Get tags grouped by category using index."""
+        self.memories[scope]._ensure_cache_valid()
+        result: dict[str, set[str]] = {}
         for entry in self.memories[scope].entries:
-            if entry.category not in category_tags:
-                category_tags[entry.category] = set()
-            category_tags[entry.category].update(entry.tags)
-        return {cat: sorted(list(tags)) for cat, tags in category_tags.items()}
+            if entry.category not in result:
+                result[entry.category] = set()
+            result[entry.category].update(entry.tags)
+        return {cat: sorted(list(tags)) for cat, tags in result.items()}
 
     def search(
         self,
@@ -1306,6 +1422,7 @@ class MemoryManager:
     def clear_scope(self, scope: MemoryScope) -> None:
         """Clear all entries in a scope."""
         self.memories[scope] = MemoryFile(scope=scope)
+        self._flush_dirty_scopes()
         self._save_scope(scope)
 
     def handle_user_memory_input(self, user_input: str) -> str | None:
@@ -1473,6 +1590,8 @@ class MemoryManager:
             final_entries.append(entry_a)
 
         self.memories[scope].entries = final_entries
+        self.memories[scope]._invalidate_cache()
+        self._flush_dirty_scopes()
         self._save_scope(scope)
 
         return {
