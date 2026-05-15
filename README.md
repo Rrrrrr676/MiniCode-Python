@@ -161,6 +161,31 @@ Run directly:
 python -m minicode.main
 ```
 
+## Tests
+
+### Cybernetics Integration Tests
+
+Verify the Engineering Cybernetics controllers:
+
+```bash
+python tests/test_cybernetics_integration.py
+```
+
+All 7 tests verify the closed-loop architecture:
+1. **Negative Feedback** — auto-corrects instability (concurrency reduction, timeout adjustment)
+2. **Positive Feedback** — reinforces successful patterns (skill update, memory persistence)
+3. **PID Adaptive Tuning** — gradual parameter optimization
+4. **Feedforward Pre-configuration** — intent-based preemptive setup
+5. **Risk Pre-assessment** — identifies permission/resource/complexity risks
+6. **Stability Monitoring** — multi-dimensional health scoring
+7. **Full Integration** — feedforward → execution → monitoring → feedback closed loop
+
+### Unit Tests
+
+```bash
+pytest
+```
+
 ## Configuration
 
 Configure your model in `~/.mini-code/settings.json`:
