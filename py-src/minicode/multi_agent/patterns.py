@@ -13,7 +13,7 @@ from __future__ import annotations
 import concurrent.futures
 import time
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable
 
 from minicode.multi_agent.types import (
     AgentRole,
@@ -33,6 +33,23 @@ class OrchestrationPattern(ABC):
     def __init__(self, shared_memory: SharedMemory | None = None, message_queue: MessageQueue | None = None):
         self.shared_memory = shared_memory or SharedMemory()
         self.message_queue = message_queue or MessageQueue()
+        self._metrics_hook: callable | None = None
+    
+    def set_metrics_hook(self, hook: callable | None) -> None:
+        """Set a metrics collection hook.
+        
+        Args:
+            hook: Callable that receives (event_name: str, data: dict)
+        """
+        self._metrics_hook = hook
+    
+    def _emit_metric(self, event_name: str, data: dict[str, Any]) -> None:
+        """Emit a metric event if hook is set."""
+        if self._metrics_hook:
+            try:
+                self._metrics_hook(event_name, data)
+            except Exception:
+                pass
     
     @abstractmethod
     def execute(

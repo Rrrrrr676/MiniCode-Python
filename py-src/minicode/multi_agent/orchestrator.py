@@ -6,6 +6,7 @@ the overall multi-agent workflow.
 
 from __future__ import annotations
 
+import random
 import time
 from typing import Any
 
@@ -54,12 +55,19 @@ class Orchestrator:
         adaptive_workflow: AdaptiveWorkflow | None = None,
         shared_memory: SharedMemory | None = None,
         message_queue: MessageQueue | None = None,
+        experiment_mode: bool = False,
+        seed: int = 42,
     ):
         self.role_analyzer = role_analyzer or RoleAnalyzer()
         self.adaptive_workflow = adaptive_workflow or AdaptiveWorkflow()
         self.shared_memory = shared_memory or SharedMemory()
         self.message_queue = message_queue or MessageQueue()
         self._agent_factory: callable | None = None
+        self.experiment_mode = experiment_mode
+        self.seed = seed
+        self._metrics_hook: callable | None = None
+        if experiment_mode:
+            random.seed(seed)
     
     def set_agent_factory(self, factory: callable) -> None:
         """Set the agent factory function.
@@ -68,6 +76,22 @@ class Orchestrator:
             factory: Function that creates agent instances
         """
         self._agent_factory = factory
+    
+    def set_metrics_hook(self, hook: callable) -> None:
+        """Set a metrics collection hook for experiment mode.
+        
+        Args:
+            hook: Callable that receives (event_name: str, data: dict)
+        """
+        self._metrics_hook = hook
+    
+    def _emit_metric(self, event_name: str, data: dict[str, Any]) -> None:
+        """Emit a metric event if hook is set."""
+        if self._metrics_hook:
+            try:
+                self._metrics_hook(event_name, data)
+            except Exception:
+                pass
     
     def execute(
         self,
@@ -91,12 +115,27 @@ class Orchestrator:
         Returns:
             Execution trace
         """
+        exec_start = time.time()
+        
         if self._agent_factory is None:
             raise RuntimeError("Agent factory not set. Call set_agent_factory() first.")
+        
+        self._emit_metric("orchestrator.execute.start", {
+            "pattern": pattern,
+            "max_roles": max_roles,
+            "adaptive": adaptive,
+            "experiment_mode": self.experiment_mode,
+            "seed": self.seed,
+        })
         
         # Generate roles if not provided
         if roles is None:
             roles = self.role_analyzer.analyze(task, max_roles=max_roles)
+        
+        self._emit_metric("orchestrator.roles.generated", {
+            "role_count": len(roles),
+            "role_names": [r.name for r in roles],
+        })
         
         # Get pattern class
         pattern_cls = self.PATTERNS.get(pattern)
@@ -108,6 +147,7 @@ class Orchestrator:
             shared_memory=self.shared_memory,
             message_queue=self.message_queue,
         )
+        pattern_instance.set_metrics_hook(self._metrics_hook)
         
         # Execute with adaptive loop
         trace = pattern_instance.execute(task, roles, self._agent_factory)
@@ -117,6 +157,15 @@ class Orchestrator:
                 trace, task, pattern_instance, roles,
                 max_adjustments,
             )
+        
+        exec_duration = time.time() - exec_start
+        self._emit_metric("orchestrator.execute.complete", {
+            "duration_seconds": exec_duration,
+            "agent_count": len(trace.results),
+            "success_rate": trace.success_rate,
+            "total_tokens": trace.total_tokens,
+            "adjustments": len(trace.adjustments),
+        })
         
         return trace
     
