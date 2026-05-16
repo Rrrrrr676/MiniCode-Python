@@ -818,6 +818,12 @@ def run_agent_turn(
     finally:
         fire_hook_sync(HookEvent.AGENT_STOP, step=step, tool_errors=tool_error_count)
 
+        if metrics_collector and metrics_collector._current_turn is not None:
+            total_tokens = sum(
+                estimate_message_tokens(m) for m in current_messages
+            ) if context_manager else 0
+            metrics_collector.end_turn(total_tokens=total_tokens)
+
         if enable_work_chain and task:
             final_state = TaskState.COMPLETED if tool_error_count == 0 else TaskState.FAILED
             task.set_state(final_state)
