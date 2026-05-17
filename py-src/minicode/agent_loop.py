@@ -48,6 +48,7 @@ from minicode.context_compactor import (
     CompactStrategy,
 )
 from minicode.context_cybernetics import ContextCyberneticsOrchestrator
+from minicode.cost_control import CostControlLoop
 from minicode.memory import MemoryManager
 
 logger = get_logger("agent_loop")
@@ -451,6 +452,14 @@ def run_agent_turn(
         self_healing_engine = SelfHealingEngine(orchestrator=context_cybernetics)
         logger.info("Self-healing engine initialized: automated recovery + compaction delegation")
 
+        # 初始化成本控制闭环 (CostTracker → PID → ToolResultBudgetManager)
+        cost_control = CostControlLoop(
+            target_cost_per_min=0.50,
+            kp=1.5, ki=0.08, kd=0.2,
+            enabled=True,
+        )
+        logger.info("CostControlLoop initialized: BudgetPIDController for cost regulation")
+
     # 检查上下文状态 + 运行 Claude Code-style 预请求优化管线
     if context_manager:
         context_manager.messages = current_messages
@@ -460,6 +469,16 @@ def run_agent_turn(
 
         # 运行控制论闭环优化管线 (Sense → Predict → Control → Act → Learn)
         if context_cybernetics:
+            if cost_control and context_compactor:
+                est_cost = stats.total_tokens * 0.000015
+                adj = cost_control.run(
+                    cost_usd=est_cost,
+                    total_tokens=stats.total_tokens,
+                    total_calls=max(step, 1),
+                )
+                if context_compactor._tool_budget:
+                    cost_control.apply_to_budget_manager(context_compactor._tool_budget)
+
             cyber_messages, cyber_result, cyber_action = context_cybernetics.run_cycle(
                 current_messages,
                 error_rate=float(tool_error_count) / max(step, 1) if step > 0 else 0.0,
@@ -1022,6 +1041,20 @@ def run_agent_turn(
                 cyber_stats["predictor"]["urgency"] or 0,
                 cyber_stats["threshold"]["effective_threshold"] or 0,
                 (cyber_stats["feedback"]["effectiveness_rate"] or 0) * 100,
+            )
+        # 成本控制闭环统计 (BudgetPIDController)
+        if cost_control:
+            cc_stats = cost_control.get_stats()
+            adj = cc_stats.get("adjustment")
+            logger.info(
+                "CostControl: cycles=%d cost/min=$%.4f pid_out=%.2f "
+                "budget_mult=%.2f threshold_mult=%.2f [%s]",
+                cc_stats["cycles_executed"],
+                cc_stats["sensor"]["cost_per_min"],
+                cc_stats["pid"]["last_output"] or 1.0,
+                adj["budget_mult"] if adj else 1.0,
+                adj["threshold_mult"] if adj else 1.0,
+                adj["reason"] if adj else "none",
             )
         # 双层 PID 闭环: Cybernetics → FeedbackController
         if context_cybernetics and feedback_controller:
