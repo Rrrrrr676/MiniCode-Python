@@ -90,8 +90,9 @@ def estimate_tokens(text: str) -> int:
     
     # 缓存查找（短文本优先缓存）
     cache_key = text if len(text) < 256 else hash(text)  # 长文本用 hash 作为 key
-    if cache_key in _token_cache:
-        return _token_cache[cache_key]
+    cached = _token_cache.get(cache_key)
+    if cached is not None:
+        return cached
     
     # 使用正则表达式快速统计 CJK 字符数量
     cjk_count = len(_CJK_PATTERN.findall(text))

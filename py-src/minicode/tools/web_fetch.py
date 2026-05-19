@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 import socket
 import urllib.request
@@ -10,22 +11,24 @@ from minicode.tooling import ToolDefinition, ToolResult
 MAX_CONTENT_LENGTH = 50000
 MAX_REDIRECTS = 5  # 限制重定向次数防止 SSRF
 
+_BLOCKED_PREFIXES = frozenset({"localhost", "127.", "10.", "192.168.", "172.16.", "0.0.0.0", "::1", "fe80:"})
 
+
+@functools.lru_cache(maxsize=256)
 def _is_safe_url(url: str) -> tuple[bool, str]:
-    """检查 URL 是否安全（非内网地址）"""
+    """检查 URL 是否安全（非内网地址），结果缓存避免重复检查"""
     try:
         from urllib.parse import urlparse
         parsed = urlparse(url)
         hostname = parsed.hostname
-        
+
         if not hostname:
             return False, "Invalid URL: no hostname"
-        
+
         # 阻止本地和內网地址
-        blocked_prefixes = ["localhost", "127.", "10.", "192.168.", "172.16.", "0.0.0.0", "::1", "fe80:"]
-        if any(hostname.startswith(p) for p in blocked_prefixes):
+        if any(hostname.startswith(p) for p in _BLOCKED_PREFIXES):
             return False, f"Access to internal addresses blocked: {hostname}"
-        
+
         return True, "OK"
     except Exception as e:
         return False, f"URL validation failed: {e}"
@@ -65,7 +68,7 @@ def _run(input_data: dict, context) -> ToolResult:
         class LimitedRedirectHandler(urllib.request.HTTPRedirectHandler):
             def __init__(self):
                 self.redirect_count = 0
-            
+
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 self.redirect_count += 1
                 if self.redirect_count > MAX_REDIRECTS:
@@ -73,7 +76,7 @@ def _run(input_data: dict, context) -> ToolResult:
                 return urllib.request.HTTPRedirectHandler.redirect_request(self, req, fp, code, msg, headers, newurl)
 
         opener = urllib.request.build_opener(LimitedRedirectHandler())
-        
+
         with opener.open(req, timeout=30) as response:
             content_type = response.headers.get("Content-Type", "")
             charset = "utf-8"

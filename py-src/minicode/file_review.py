@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import difflib
+import os
+import tempfile
 from pathlib import Path
 
 from minicode.tooling import ToolContext, ToolResult
@@ -45,5 +47,22 @@ def apply_reviewed_file_change(
         context.permissions.ensure_edit(str(target), diff)
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(next_content, encoding="utf-8")
+
+    # Atomic write: write to temp file then rename to avoid corruption
+    fd, tmp_path = tempfile.mkstemp(
+        dir=target.parent,
+        suffix=".tmp",
+        prefix=target.name + ".",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(next_content)
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
     return ToolResult(ok=True, output=f"Applied reviewed changes to {file_path}")

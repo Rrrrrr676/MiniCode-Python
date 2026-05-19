@@ -1,11 +1,41 @@
 from __future__ import annotations
 
+import functools
 import json
+import re
 import urllib.request
 import urllib.parse
 from minicode.tooling import ToolDefinition, ToolResult
 
 MAX_RESULTS = 10
+
+
+# 预编译正则表达式，避免每次解析时重复编译
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_RESULT_PATTERN = re.compile(
+    r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?'
+    r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
+    re.DOTALL,
+)
+
+_ENTITY_REPLACEMENTS = (
+    ("&amp;", "&"),
+    ("&quot;", '"'),
+    ("&#x27;", "'"),
+    ("&#39;", "'"),
+    ("&lt;", "<"),
+    ("&gt;", ">"),
+    ("&nbsp;", " "),
+)
+
+
+@functools.lru_cache(maxsize=64)
+def _clean_html_text(text: str) -> str:
+    """清理 HTML 文本，缓存结果避免重复处理"""
+    text = _HTML_TAG_RE.sub("", text).strip()
+    for old, new in _ENTITY_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
 
 
 def _validate(input_data: dict) -> dict:
@@ -74,28 +104,15 @@ def _run(input_data: dict, context) -> ToolResult:
 
 def _parse_duckduckgo_results(html: str, max_results: int) -> list[dict[str, str]]:
     """Parse DuckDuckGo HTML search results."""
-    import re
-
     results = []
 
-    # Find all result blocks
-    result_pattern = re.compile(
-        r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?'
-        r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
-        re.DOTALL,
-    )
-
-    for match in result_pattern.finditer(html):
+    for match in _RESULT_PATTERN.finditer(html):
         if len(results) >= max_results:
             break
 
         url = match.group(1)
-        title = re.sub(r"<[^>]+>", "", match.group(2)).strip()
-        snippet = re.sub(r"<[^>]+>", "", match.group(3)).strip()
-
-        # Clean up entities
-        title = title.replace("&amp;", "&").replace("&quot;", '"').replace("&#x27;", "'")
-        snippet = snippet.replace("&amp;", "&").replace("&quot;", '"').replace("&#x27;", "'")
+        title = _clean_html_text(match.group(2))
+        snippet = _clean_html_text(match.group(3))
 
         if url and title:
             results.append({

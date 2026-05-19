@@ -230,6 +230,11 @@ def _validate_tar_extract(input_data: dict) -> dict:
     destination = input_data.get("destination", "")
     if not isinstance(source, str) or not source.strip():
         raise ValueError("source is required")
+    # Validate source path does not contain path traversal
+    if ".." in source or source.startswith("/"):
+        raise ValueError("source path cannot contain path traversal")
+    if destination and (".." in destination or destination.startswith("/")):
+        raise ValueError("destination path cannot contain path traversal")
     return {"source": source.strip(), "destination": destination.strip() if destination else ""}
 
 
@@ -287,22 +292,27 @@ def _validate_zip_create(input_data: dict) -> dict:
 def _run_zip_create(input_data: dict, context: ToolContext) -> ToolResult:
     source = Path(context.cwd) / input_data["source"]
     destination = Path(context.cwd) / input_data["destination"]
-    
+
     if not source.exists():
         return ToolResult(ok=False, output=f"Source not found: {input_data['source']}")
-    
+
     try:
         if not str(destination).endswith(".zip"):
             destination = Path(str(destination) + ".zip")
-        
+
         with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as zf:
             if source.is_file():
                 zf.write(source, source.name)
             else:
-                for item in source.rglob("*"):
-                    if item.is_file():
-                        zf.write(item, item.relative_to(source.parent))
-        
+                # Collect all files first to avoid repeated rglob iteration
+                files_to_add = [
+                    (item, item.relative_to(source.parent))
+                    for item in source.rglob("*")
+                    if item.is_file()
+                ]
+                for item, arcname in files_to_add:
+                    zf.write(item, arcname)
+
         return ToolResult(ok=True, output=f"Created {destination.name}")
     except Exception as e:
         return ToolResult(ok=False, output=f"Zip error: {e}")
@@ -333,6 +343,11 @@ def _validate_zip_extract(input_data: dict) -> dict:
     destination = input_data.get("destination", "")
     if not isinstance(source, str) or not source.strip():
         raise ValueError("source is required")
+    # Validate source path does not contain path traversal
+    if ".." in source or source.startswith("/"):
+        raise ValueError("source path cannot contain path traversal")
+    if destination and (".." in destination or destination.startswith("/")):
+        raise ValueError("destination path cannot contain path traversal")
     return {"source": source.strip(), "destination": destination.strip() if destination else ""}
 
 

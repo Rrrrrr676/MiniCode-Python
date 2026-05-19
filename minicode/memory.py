@@ -13,11 +13,13 @@ Search uses TF-IDF relevance scoring for intelligent retrieval.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import math
 import os
 import re
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -296,15 +298,131 @@ _CODE_TERM_EXPANSIONS: dict[str, list[str]] = {
 }
 
 
-def _expand_query_terms(terms: list[str]) -> list[str]:
-    """Expand query terms using code terminology dictionary."""
+def _expand_query_terms(terms: list[str], active_domains: list[str] | None = None) -> list[str]:
+    """Expand query terms using code terminology + domain-specific dictionaries."""
     expanded = list(terms)
     for term in terms:
         if term in _CODE_TERM_EXPANSIONS:
             expanded.extend(_CODE_TERM_EXPANSIONS[term])
+    # Domain-specific expansions
+    if active_domains:
+        for domain in active_domains:
+            domain_dict = _DOMAIN_TERM_EXPANSIONS.get(domain, {})
+            for term in terms:
+                if term in domain_dict:
+                    expanded.extend(domain_dict[term])
     return expanded
 
 
+# ── Domain-specific term expansions ─────────────────────────────────
+
+_DOMAIN_TERM_EXPANSIONS: dict[str, dict[str, list[str]]] = {
+    "frontend": {
+        "component": ["组件", "widget", "control", "element"],
+        "组件": ["component", "widget", "control"],
+        "form": ["表单", "input", "field"],
+        "表单": ["form", "input", "field"],
+        "style": ["样式", "css", "theme", "design"],
+        "样式": ["style", "css", "theme"],
+        "css": ["样式", "style", "theme", "tailwind"],
+        "render": ["渲染", "display", "paint"],
+        "渲染": ["render", "display"],
+        "state": ["状态", "store", "context"],
+        "状态": ["state", "store"],
+        "hook": ["hooks", "钩子"],
+        "router": ["路由", "navigation"],
+        "路由": ["router", "navigation", "route"],
+        "button": ["按钮", "btn"],
+        "modal": ["弹窗", "dialog", "popup"],
+        "layout": ["布局", "grid", "flex"],
+        "布局": ["layout", "grid", "flexbox"],
+        "animation": ["动画", "transition", "motion"],
+        "event": ["事件", "handler", "listener"],
+        "props": ["属性", "properties", "parameters"],
+        "dom": ["文档", "document", "node", "element"],
+        "responsive": ["响应式", "adaptive", "mobile"],
+        "typescript": ["ts", "type"],
+    },
+    "backend": {
+        "api": ["端点", "endpoint", "路由", "route", "handler"],
+        "endpoint": ["端点", "api", "路由"],
+        "route": ["路由", "path", "endpoint", "api"],
+        "auth": ["认证", "鉴权", "login", "token", "jwt", "oauth"],
+        "认证": ["auth", "authentication", "login"],
+        "middleware": ["中间件", "interceptor", "filter"],
+        "中间件": ["middleware", "interceptor"],
+        "request": ["请求", "req"],
+        "response": ["响应", "res", "reply"],
+        "server": ["服务器", "服务端", "host"],
+        "服务器": ["server", "host"],
+        "queue": ["队列", "message", "mq", "worker"],
+        "队列": ["queue", "message", "worker"],
+        "cache": ["缓存", "redis", "memcache"],
+        "缓存": ["cache", "redis"],
+        "cron": ["定时", "schedule", "job", "task"],
+        "定时": ["cron", "schedule", "timer"],
+        "log": ["日志", "logging", "trace"],
+        "日志": ["log", "logging"],
+        "validate": ["校验", "验证", "sanitize", "check"],
+        "校验": ["validate", "validation", "check"],
+        "rate limit": ["限流", "throttle", "quota"],
+        "限流": ["rate limit", "throttle"],
+        "serialize": ["序列化", "marshal", "json"],
+        "序列化": ["serialize", "marshal"],
+    },
+    "database": {
+        "migration": ["迁移", "schema change", "ddl", "alembic", "flyway"],
+        "迁移": ["migration", "schema change"],
+        "schema": ["模式", "结构", "ddl", "table def"],
+        "query": ["查询", "select", "sql"],
+        "查询": ["query", "select", "read"],
+        "index": ["索引", "btree", "hash"],
+        "索引": ["index", "lookup"],
+        "transaction": ["事务", "commit", "rollback", "acid"],
+        "事务": ["transaction", "commit"],
+        "connection": ["连接", "pool", "session"],
+        "连接": ["connection", "pool"],
+        "postgres": ["postgresql", "pg"],
+        "orm": ["prisma", "typeorm", "sequelize", "drizzle", "sqlalchemy"],
+        "backup": ["备份", "dump", "restore"],
+        "备份": ["backup", "dump"],
+        "replica": ["副本", "standby", "slave"],
+        "partition": ["分区", "shard", "split"],
+    },
+    "devops": {
+        "deploy": ["部署", "release", "ship"],
+        "部署": ["deploy", "release"],
+        "docker": ["容器", "container", "image"],
+        "容器": ["docker", "container"],
+        "ci": ["持续集成", "pipeline", "build"],
+        "pipeline": ["流水线", "ci/cd", "workflow"],
+        "monitor": ["监控", "alert", "observe", "metrics"],
+        "监控": ["monitor", "alert", "metrics"],
+        "secret": ["密钥", "credentials", "env"],
+        "密钥": ["secret", "credentials", "token"],
+        "kubernetes": ["k8s", "pod", "cluster"],
+        "k8s": ["kubernetes", "cluster"],
+        "nginx": ["反向代理", "proxy", "gateway"],
+        "terraform": ["基础设施", "infrastructure", "iac"],
+        "log": ["日志", "logging", "收集", "aggregate"],
+        "backup": ["备份", "snapshot", "restore"],
+    },
+    "testing": {
+        "test": ["测试", "spec", "assert"],
+        "mock": ["模拟", "stub", "fake", "spy"],
+        "模拟": ["mock", "stub", "fake"],
+        "assert": ["断言", "expect", "should"],
+        "断言": ["assert", "expect"],
+        "coverage": ["覆盖率", "cover"],
+        "e2e": ["端到端", "end-to-end", "integration"],
+        "unit": ["单元", "unit test"],
+        "fixture": ["夹具", "setup", "teardown"],
+        "regression": ["回归", "replay"],
+    },
+}
+
+
+@functools.lru_cache(maxsize=1024)
 def _tokenize(text: str) -> list[str]:
     """Tokenize text into words for TF-IDF scoring.
 
@@ -495,6 +613,21 @@ class MemoryScope(str, Enum):
     LOCAL = "local"     # Project-local, .mini-code-memory-local/
 
 
+class MemoryTier(str, Enum):
+    """Memory tier for multi-level storage architecture.
+
+    Inspired by human memory models (Atkinson-Shiffrin) and Letta/MemGPT:
+      WORKING    → current session, full detail, fast access
+      SHORT_TERM → recent (< 7 days), full detail
+      LONG_TERM  → consolidated (< 30 days), compressed
+      ARCHIVAL   → permanent, heavily summarized
+    """
+    WORKING = "working"
+    SHORT_TERM = "short_term"
+    LONG_TERM = "long_term"
+    ARCHIVAL = "archival"
+
+
 _VALID_SCOPES = {m.value for m in MemoryScope}
 
 
@@ -509,6 +642,29 @@ class MemoryEntry:
     updated_at: float = field(default_factory=time.time)
     tags: list[str] = field(default_factory=list)
     usage_count: int = 0  # How often this was referenced
+    domains: list[str] = field(default_factory=list)  # Domain classification
+    # Multi-tier memory architecture
+    tier: MemoryTier = MemoryTier.SHORT_TERM
+    last_accessed: float = field(default_factory=time.time)
+    related_to: list[str] = field(default_factory=list)  # Related memory IDs
+    _cached_tokens: list[str] | None = field(default=None, repr=False)
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, MemoryEntry):
+            return NotImplemented
+        return self.id == other.id
+
+    def get_tokens(self) -> list[str]:
+        if self._cached_tokens is None:
+            text = f"{self.content} {self.category} {' '.join(self.tags)}"
+            self._cached_tokens = _tokenize(text)
+        return self._cached_tokens
+
+    def invalidate_tokens(self) -> None:
+        self._cached_tokens = None
     
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -521,6 +677,10 @@ class MemoryEntry:
             "updated_at": self.updated_at,
             "tags": self.tags,
             "usage_count": self.usage_count,
+            "domains": self.domains,
+            "tier": self.tier.value,
+            "last_accessed": self.last_accessed,
+            "related_to": self.related_to,
         }
     
     @classmethod
@@ -535,61 +695,127 @@ class MemoryEntry:
             updated_at=data.get("updated_at", time.time()),
             tags=data.get("tags", []),
             usage_count=data.get("usage_count", 0),
+            domains=data.get("domains", []),
+            tier=MemoryTier(data.get("tier", "short_term")),
+            last_accessed=data.get("last_accessed", time.time()),
+            related_to=data.get("related_to", []),
         )
 
 
 @dataclass
 class MemoryFile:
-    """Represents a MEMORY.md file content."""
+    """Represents a MEMORY.md file content with indexed lookups."""
     scope: MemoryScope
     entries: list[MemoryEntry] = field(default_factory=list)
     max_entries: int = 200  # Claude Code limit
     max_size_bytes: int = 25 * 1024  # 25KB limit
-    
+    _id_index: dict[str, MemoryEntry] = field(default_factory=dict, repr=False)
+    _tag_index: dict[str, set[MemoryEntry]] = field(default_factory=dict, repr=False)
+    _category_index: dict[str, list[MemoryEntry]] = field(default_factory=dict, repr=False)
+    _tokens_cache: dict[str, list[str]] = field(default_factory=dict, repr=False)
+    _idf_cache: dict[str, float] | None = field(default=None, repr=False)
+    _avgdl_cache: float | None = field(default=None, repr=False)
+    _cache_dirty: bool = field(default=True, repr=False)
+
+    def _rebuild_indices(self) -> None:
+        self._id_index.clear()
+        self._tag_index.clear()
+        self._category_index.clear()
+        self._tokens_cache.clear()
+        for entry in self.entries:
+            self._id_index[entry.id] = entry
+            for tag in entry.tags:
+                if tag not in self._tag_index:
+                    self._tag_index[tag] = set()
+                self._tag_index[tag].add(entry)
+            cat = entry.category
+            if cat not in self._category_index:
+                self._category_index[cat] = []
+            self._category_index[cat].append(entry)
+            self._tokens_cache[entry.id] = entry.get_tokens()
+        # Precompute IDF and avgdl
+        if self._tokens_cache:
+            all_tokens = list(self._tokens_cache.values())
+            self._idf_cache = _compute_idf(all_tokens)
+            self._avgdl_cache = _compute_avgdl(all_tokens)
+        self._cache_dirty = False
+
+    def _ensure_cache_valid(self) -> None:
+        if self._cache_dirty:
+            self._rebuild_indices()
+
+    def _invalidate_cache(self) -> None:
+        self._cache_dirty = True
+        self._idf_cache = None
+        self._avgdl_cache = None
+
     @property
     def size_bytes(self) -> int:
         """Estimate size in bytes."""
         return sum(len(e.content) for e in self.entries)
     
     def add_entry(self, entry: MemoryEntry) -> None:
-        """Add entry, respecting limits."""
+        """Add entry, respecting limits. Maintains indices incrementally."""
+        self._ensure_cache_valid()
         self.entries.append(entry)
+        self._id_index[entry.id] = entry
+        for tag in entry.tags:
+            if tag not in self._tag_index:
+                self._tag_index[tag] = set()
+            self._tag_index[tag].add(entry)
+        cat = entry.category
+        if cat not in self._category_index:
+            self._category_index[cat] = []
+        self._category_index[cat].append(entry)
+        self._tokens_cache[entry.id] = entry.get_tokens()
         self._enforce_limits()
     
     def update_entry(self, entry_id: str, content: str) -> bool:
-        """Update existing entry."""
-        for entry in self.entries:
-            if entry.id == entry_id:
-                entry.content = content
-                entry.updated_at = time.time()
-                return True
-        return False
+        """Update existing entry using index."""
+        self._ensure_cache_valid()
+        entry = self._id_index.get(entry_id)
+        if entry is None:
+            return False
+        entry.content = content
+        entry.updated_at = time.time()
+        entry.invalidate_tokens()
+        self._tokens_cache[entry.id] = entry.get_tokens()
+        return True
     
     def delete_entry(self, entry_id: str) -> bool:
-        """Delete entry."""
-        for i, entry in enumerate(self.entries):
-            if entry.id == entry_id:
-                self.entries.pop(i)
-                return True
-        return False
+        """Delete entry using index."""
+        self._ensure_cache_valid()
+        entry = self._id_index.get(entry_id)
+        if entry is None:
+            return False
+        self.entries.remove(entry)
+        del self._id_index[entry_id]
+        for tag in entry.tags:
+            if tag in self._tag_index:
+                self._tag_index[tag].discard(entry)
+        cat = entry.category
+        if cat in self._category_index and entry in self._category_index[cat]:
+            self._category_index[cat].remove(entry)
+        self._tokens_cache.pop(entry_id, None)
+        return True
     
     def get_entries_by_category(self, category: str) -> list[MemoryEntry]:
-        """Get entries filtered by category."""
-        return [e for e in self.entries if e.category == category]
+        """Get entries filtered by category using index."""
+        self._ensure_cache_valid()
+        return list(self._category_index.get(category, []))
     
-    def search(self, query: str) -> list[MemoryEntry]:
-        """Search entries by keyword with BM25 relevance scoring.
+    def search(self, query: str, active_domains: list[str] | None = None) -> list[MemoryEntry]:
+        """Search entries by keyword with BM25 + domain relevance scoring.
 
-        Combines BM25 semantic relevance with usage frequency for
-        better result ranking than simple substring matching.
-        Query terms are expanded using code terminology dictionary.
-        Exact tag matches receive highest priority scores.
+        Combines BM25 semantic relevance with usage frequency and optional
+        domain-based boosting (soft blend, not hard filtering).
+        Domain score uses Jaccard similarity between entry domains and active domains.
         """
         if not self.entries:
             return []
 
         query_tokens = _tokenize(query)
-        query_tokens = _expand_query_terms(query_tokens)
+        query_tokens = _expand_query_terms(query_tokens, active_domains=active_domains)
         if not query_tokens:
             return []
 
@@ -633,15 +859,29 @@ class MemoryFile:
             if match_score <= 0:
                 continue
 
-            usage_bonus = math.log1p(entry.usage_count) * 0.3
+            # Domain score: Jaccard similarity between entry.domains and active_domains
+            domain_score = 0.0
+            if active_domains and entry.domains:
+                entry_set = set(entry.domains)
+                active_set = set(active_domains)
+                intersection = entry_set & active_set
+                union = entry_set | active_set
+                domain_score = len(intersection) / len(union) if union else 0.0
 
+            # Soft blend: BM25 dominates, domain provides light steering
+            final_relevance = match_score * 0.7 + domain_score * 0.3
+
+            usage_bonus = math.log1p(entry.usage_count) * 0.3
             age_hours = (time.time() - entry.updated_at) / 3600
             recency_bonus = 1.0 / (1.0 + age_hours / 24.0) * 0.5
 
-            total_score = match_score + usage_bonus + recency_bonus
+            total_score = final_relevance + usage_bonus + recency_bonus
             scored.append((total_score, entry))
 
         scored.sort(key=lambda x: x[0], reverse=True)
+        # Increment usage_count for top results to feed back into future scoring
+        for _, entry in scored[:10]:
+            entry.usage_count += 1
         return [entry for _, entry in scored]
     
     def _enforce_limits(self) -> None:
@@ -835,6 +1075,7 @@ class MemoryManager:
                     for entry_data in data.get("entries", []):
                         entry = MemoryEntry.from_dict(entry_data)
                         self.memories[scope].entries.append(entry)
+                    self.memories[scope]._rebuild_indices()
                     return
                 else:
                     logger.warning(
@@ -848,6 +1089,7 @@ class MemoryManager:
                         self.memories[scope].entries.append(entry)
                     if valid_entries:
                         self._save_scope(scope)
+                    self.memories[scope]._rebuild_indices()
                     return
             except json.JSONDecodeError as e:
                 logger.error(
@@ -900,6 +1142,9 @@ class MemoryManager:
                     tags=tags,
                 )
                 self.memories[scope].entries.append(entry)
+        # Rebuild indices after Markdown-based loading
+        if self.memories[scope].entries:
+            self.memories[scope]._rebuild_indices()
     
     def _get_scope_path(self, scope: MemoryScope) -> Path:
         """Get path for memory scope."""
@@ -1022,27 +1267,26 @@ class MemoryManager:
         scope: MemoryScope | None = None,
         limit: int = 20,
         min_relevance: float = 0.1,
+        active_domains: list[str] | None = None,
     ) -> list[MemoryEntry]:
-        """Search across memory scopes with TF-IDF relevance ranking.
-
-        Combines TF-IDF semantic relevance with usage frequency for
-        better result ranking than simple substring matching.
+        """Search across memory scopes with TF-IDF + domain relevance.
 
         Args:
             query: Search query string
             scope: Optional scope to limit search to
             limit: Maximum results to return
             min_relevance: Minimum relevance score threshold (0.0-1.0)
+            active_domains: Current domain context for soft boosting
 
         Returns:
-            Entries ranked by relevance (TF-IDF + usage + recency)
+            Entries ranked by relevance (TF-IDF + domain + usage + recency)
         """
         results = []
 
         scopes_to_search = [scope] if scope else list(MemoryScope)
 
         for s in scopes_to_search:
-            results.extend(self.memories[s].search(query))
+            results.extend(self.memories[s].search(query, active_domains=active_domains))
 
         # Apply minimum relevance threshold
         # (entries are already scored by MemoryFile.search)
@@ -1237,18 +1481,53 @@ class MemoryManager:
         }
     
     def format_stats(self) -> str:
-        """Format memory stats for display."""
-        stats = self.get_stats()
-        lines = ["Memory System Status", "=" * 40, ""]
-        
-        for scope_name, scope_stats in stats.items():
-            lines.append(f"{scope_name.title()} Memory:")
-            lines.append(f"  Entries: {scope_stats['entries']}")
-            lines.append(f"  Size: {scope_stats['size_bytes'] / 1024:.1f} KB")
-            if scope_stats['categories']:
-                lines.append(f"  Categories: {', '.join(scope_stats['categories'][:5])}")
+        """Format memory stats for display with tier and domain breakdown."""
+        from collections import Counter
+
+        lines = ["Memory System Status", "=" * 50, ""]
+        tiers: Counter[str] = Counter()
+        domains: Counter[str] = Counter()
+        total_entries = 0
+        total_size = 0
+        insight_count = 0
+
+        for scope_name, scope_stats in self.get_stats().items():
+            lines.append(f"{scope_name.title()}: {scope_stats['entries']} entries, "
+                        f"{scope_stats['size_bytes'] / 1024:.1f} KB")
+            total_entries += scope_stats["entries"]
+            total_size += scope_stats["size_bytes"]
+
+            # Collect tier and domain stats
+            scope = MemoryScope(scope_name)
+            if scope in self.memories:
+                for e in self.memories[scope].entries:
+                    tiers[e.tier.value] += 1
+                    for d in e.domains:
+                        domains[d] += 1
+                    if e.category == "insight":
+                        insight_count += 1
+
+        lines.append("")
+        lines.append(f"Total: {total_entries} entries ({total_size / 1024:.1f} KB)")
+        lines.append("")
+
+        if tiers:
+            lines.append("Tier Distribution:")
+            for tier_name in ["working", "short_term", "long_term", "archival"]:
+                count = tiers.get(tier_name, 0)
+                bar = "#" * (count // max(1, total_entries // 20))
+                lines.append(f"  {tier_name:<12} {count:>4} {bar}")
             lines.append("")
-        
+
+        if domains:
+            lines.append("Domain Distribution:")
+            for domain, count in domains.most_common(6):
+                lines.append(f"  {domain:<15} {count:>3}")
+            lines.append("")
+
+        if insight_count:
+            lines.append(f"Curator Insights: {insight_count} synthesized")
+
         return "\n".join(lines)
     
     def clear_scope(self, scope: MemoryScope) -> None:
@@ -1472,6 +1751,156 @@ class MemoryManager:
             return content_a
         return content_b
 
+    def detect_conflicts(self, content: str, scope: MemoryScope | None = None, threshold: float = 0.6) -> list[tuple[MemoryEntry, float]]:
+        """Detect potential conflicts between new content and existing memories.
+
+        Uses Jaccard similarity on token sets to identify entries that may
+        contradict or overlap with the proposed new memory content.
+
+        Args:
+            content: New memory content to check for conflicts
+            scope: Scope to check (None = all scopes)
+            threshold: Similarity threshold for conflict flagging (0.0-1.0)
+
+        Returns:
+            List of (entry, similarity) tuples sorted by similarity descending
+        """
+        new_tokens = set(_tokenize(content))
+        if not new_tokens:
+            return []
+
+        conflicts: list[tuple[MemoryEntry, float]] = []
+        scopes = [scope] if scope else list(MemoryScope)
+
+        for s in scopes:
+            if s not in self.memories:
+                continue
+            for entry in self.memories[s].entries:
+                old_tokens = set(entry.get_tokens())
+                if not old_tokens:
+                    continue
+                intersection = new_tokens & old_tokens
+                union = new_tokens | old_tokens
+                similarity = len(intersection) / len(union) if union else 0.0
+                if similarity >= threshold:
+                    conflicts.append((entry, similarity))
+
+        conflicts.sort(key=lambda x: x[1], reverse=True)
+        return conflicts
+
+    def decay_memories(self, max_age_days: float = 30.0, decay_factor: float = 0.5) -> int:
+        """Apply time-based decay to memory usage_count.
+
+        Entries older than max_age_days have their usage_count halved
+        (multiplied by decay_factor), reducing their search ranking.
+        Returns number of entries decayed.
+        """
+        now = time.time()
+        decayed = 0
+        for scope in MemoryScope:
+            if scope not in self.memories:
+                continue
+            for entry in self.memories[scope].entries:
+                age_days = (now - entry.updated_at) / 86400.0
+                if age_days > max_age_days and entry.usage_count > 0:
+                    entry.usage_count = max(0, int(entry.usage_count * decay_factor))
+                    decayed += 1
+        if decayed:
+            for scope in MemoryScope:
+                self._save_scope(scope)
+        return decayed
+
+    def promote_memories(self) -> dict[str, int]:
+        """Promote/demote memories across tiers based on usage and age.
+
+        WORKING → SHORT_TERM → LONG_TERM → ARCHIVAL
+        Returns counts per operation.
+        """
+        now = time.time()
+        stats = {"promoted_to_long": 0, "demoted_to_archival": 0, "reactivated": 0}
+        for scope in MemoryScope:
+            if scope not in self.memories:
+                continue
+            for entry in self.memories[scope].entries:
+                age_days = (now - entry.updated_at) / 86400.0
+                accessed_days = (now - entry.last_accessed) / 86400.0
+                if entry.tier == MemoryTier.SHORT_TERM and entry.usage_count >= 5 and age_days > 7:
+                    entry.tier = MemoryTier.LONG_TERM
+                    stats["promoted_to_long"] += 1
+                if entry.tier == MemoryTier.LONG_TERM and accessed_days > 30:
+                    entry.tier = MemoryTier.ARCHIVAL
+                    entry.content = self._summarize_content(entry.content)
+                    stats["demoted_to_archival"] += 1
+                if entry.tier in (MemoryTier.LONG_TERM, MemoryTier.ARCHIVAL) and accessed_days < 7:
+                    entry.tier = MemoryTier.SHORT_TERM
+                    stats["reactivated"] += 1
+        if any(stats.values()):
+            for scope in MemoryScope:
+                self._save_scope(scope)
+        return stats
+
+    def link_memories(self, similarity_threshold: float = 0.4) -> int:
+        """Auto-link related memories by content similarity. Returns link count."""
+        links = 0
+        for scope in MemoryScope:
+            if scope not in self.memories:
+                continue
+            entries = self.memories[scope].entries
+            for i, a in enumerate(entries):
+                for j, b in enumerate(entries):
+                    if i >= j:
+                        continue
+                    if b.id in a.related_to:
+                        continue
+                    if self._jaccard_similarity(a.content, b.content) >= similarity_threshold:
+                        a.related_to.append(b.id)
+                        b.related_to.append(a.id)
+                        links += 2
+        if links:
+            for scope in MemoryScope:
+                self._save_scope(scope)
+        return links
+
+    def get_linked_memories(self, entry_id: str, depth: int = 1) -> list[MemoryEntry]:
+        """Get memories linked to entry_id via related_to graph (BFS up to depth)."""
+        entry = None
+        found_scope = None
+        for s in MemoryScope:
+            if s in self.memories:
+                entry = self.memories[s]._id_index.get(entry_id)
+                if entry:
+                    found_scope = s
+                    break
+        if not entry or not entry.related_to or not found_scope:
+            return []
+        visited = {entry_id}
+        frontier = list(entry.related_to)
+        results = []
+        for _ in range(depth):
+            nxt = []
+            for rid in frontier:
+                if rid in visited:
+                    continue
+                visited.add(rid)
+                linked = self.memories[found_scope]._id_index.get(rid)
+                if linked:
+                    results.append(linked)
+                    nxt.extend(linked.related_to)
+            frontier = nxt
+            if not frontier:
+                break
+        return results
+
+    @staticmethod
+    def _summarize_content(content: str, max_len: int = 150) -> str:
+        if len(content) <= max_len:
+            return content
+        for sep in [". ", ".\n", "; ", ";\n", "\n"]:
+            idx = content.find(sep)
+            if 20 < idx < max_len:
+                return content[:idx + 1]
+        return content[:max_len] + "..."
+
     def _find_entry_indices(self, scope: MemoryScope, entry_id: str) -> list[int]:
         """Find all indices of entries with a given ID."""
         indices = []
@@ -1511,8 +1940,34 @@ Use this context to inform your decisions and follow established patterns."""
 # CLI commands
 # ---------------------------------------------------------------------------
 
-def format_memory_list(scope: MemoryScope | None = None, category: str | None = None) -> str:
+def format_memory_list(memory_manager=None, scope: MemoryScope | None = None, category: str | None = None) -> str:
     """Format memory entries for CLI display."""
-    # This would be called with a MemoryManager instance
-    # Placeholder for CLI command formatting
-    return "Memory listing not available without MemoryManager instance."
+    if memory_manager is None:
+        return "No MemoryManager available."
+
+    # Collect entries from specified scope(s)
+    scopes = [scope] if scope else list(MemoryScope)
+    all_entries: list[MemoryEntry] = []
+    for s in scopes:
+        if s in memory_manager.memories:
+            entries = memory_manager.memories[s].entries
+            if category:
+                entries = [e for e in entries if e.category == category]
+            all_entries.extend(entries)
+
+    if not all_entries:
+        return "No memories found."
+
+    lines = [f"{'=' * 60}"]
+    for entry in all_entries[:20]:  # Limit to 20 entries
+        scope_tag = f"[{entry.scope.value if hasattr(entry, 'scope') else '?'}]"
+        cat_tag = f"[{entry.category}]"
+        content_preview = entry.content[:100].replace('\n', ' ')
+        lines.append(f"{scope_tag} {cat_tag} {content_preview}")
+        if entry.tags:
+            lines.append(f"     Tags: {', '.join(entry.tags[:5])}")
+        lines.append(f"     Used: {entry.usage_count}x | Updated: {time.strftime('%Y-%m-%d %H:%M', time.localtime(entry.updated_at))}")
+        lines.append("")
+    lines.append(f"{'=' * 60}")
+    lines.append(f"Total: {len(all_entries)} entries")
+    return "\n".join(lines)

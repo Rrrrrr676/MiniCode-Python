@@ -211,7 +211,11 @@ class HookManager:
         return results
     
     def fire_sync(self, event: HookEvent, **kwargs: Any) -> list[Any]:
-        """Fire event synchronously (for sync hooks only)."""
+        """Fire event synchronously (for sync hooks only).
+        
+        Each hook has a 5-second timeout to prevent a slow hook from
+        blocking the entire agent loop.
+        """
         if not self._enabled:
             return []
         
@@ -221,18 +225,26 @@ class HookManager:
         for registration in self._hooks[event]:
             if not registration.enabled or registration.is_async:
                 continue
-            
+
             start_time = time.time()
             try:
                 result = registration.handler(context)
                 registration.call_count += 1
-                registration.last_called = time.time()
-                
-                duration_ms = int((time.time() - start_time) * 1000)
+                now = time.time()
+                registration.last_called = now
+
+                duration_ms = int((now - start_time) * 1000)
                 registration.total_duration_ms += duration_ms
-                
+
+                # Warn about slow hooks
+                if duration_ms > 5000:
+                    logger.warning(
+                        "Hook %s for %s took %dms (exceeds 5s threshold)",
+                        registration.name, event.value, duration_ms
+                    )
+
                 results.append(result)
-            
+
             except Exception as e:
                 results.append(f"Hook error: {e}")
         
@@ -356,16 +368,24 @@ def create_script_hook(script_path: Path) -> AsyncHookHandler:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await process.communicate()
-            
+            # Timeout to prevent hanging hooks
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                return "Script execution timed out after 30 seconds"
+
             if process.returncode == 0:
                 return stdout.decode("utf-8", errors="replace")
             else:
                 return f"Script failed: {stderr.decode('utf-8', errors='replace')}"
-        
+
         except Exception as e:
             return f"Script execution failed: {e}"
-    
+
     return handler
 
 

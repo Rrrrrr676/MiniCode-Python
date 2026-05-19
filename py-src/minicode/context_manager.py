@@ -6,6 +6,7 @@ within token limits while preserving critical information for coding tasks.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import os
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from minicode.logging_config import get_logger
+from minicode.working_memory import WorkingMemoryTracker, get_working_memory
 
 logger = get_logger("context_manager")
 
@@ -90,8 +92,8 @@ def estimate_tokens(text: str) -> int:
     if not text:
         return 0
     
-    # Cache lookup (short strings as key, long strings by hash)
-    cache_key = text if len(text) < 256 else hash(text)
+    # Cache lookup (short strings as key, long strings by md5 hash)
+    cache_key = text if len(text) < 256 else hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
     cached = _token_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -180,43 +182,45 @@ _DECISION_KEYWORDS = re.compile(
 def _extract_from_messages(messages: list[dict[str, Any]]) -> _ExtractedInfo:
     """Extract structured information from messages for layered summarization."""
     info = _ExtractedInfo()
-    
+
     for msg in messages:
         role = msg.get("role", "")
         content = msg.get("content", "")
-        
+
         if role == "user" and content:
             if len(content) < 200:  # Likely a task or question
                 info.user_intents.append(content)
-        
+
         elif role == "assistant" and content:
             # Extract decisions and conclusions
             if _DECISION_KEYWORDS.search(content):
                 info.decisions.append(content[:150])
             if len(content) > 100:  # Likely contains conclusions
                 info.assistant_conclusions.append(content[-100:])
-        
+
         elif role == "assistant_tool_call":
             tool_name = msg.get("toolName", "")
             if tool_name:
                 info.tool_names.append(tool_name)
-        
+
         elif role == "tool_result" and content:
+            content_str = str(content)
+            content_lower = content_str.lower()
             # Keep successful file operation confirmations
             if not msg.get("isError", False):
-                if any(tool in str(content).lower() for tool in ["saved", "created", "updated", "modified"]):
-                    info.key_tool_results.append(str(content)[:100])
-            
+                if any(tool in content_lower for tool in ["saved", "created", "updated", "modified"]):
+                    info.key_tool_results.append(content_str[:100])
+
             # Extract code snippets from tool results
-            code_matches = _CODE_FENCE_RE.findall(str(content))
+            code_matches = _CODE_FENCE_RE.findall(content_str)
             for code in code_matches[:2]:  # Keep up to 2 snippets
                 if len(code) < 200:
                     info.code_snippets.append(code)
-            
+
             # Extract file paths
-            path_matches = re.findall(r'(?:in|at|from|path:?)\s+([/\w\.\-]+)', str(content))
+            path_matches = re.findall(r'(?:in|at|from|path:?)\s+([/\w\.\-]+)', content_str)
             info.file_paths.update(path_matches)
-    
+
     return info
 
 
@@ -256,6 +260,7 @@ class ContextManager:
         self,
         messages: list[dict[str, Any]],
         context_window: int = 200000,
+        working_memory: WorkingMemoryTracker | None = None,
     ):
         self.messages = messages
         self.context_window = context_window
@@ -263,6 +268,9 @@ class ContextManager:
         # Incremental token count
         self._total_tokens: int | None = None
         self._last_compaction_time: float = 0
+        self._working_memory = working_memory or get_working_memory()
+        # Index for fast message lookup by role
+        self._role_index: dict[str, list[int]] = {}
     
     def get_stats(self) -> ContextStats:
         """Get context statistics with incremental counting."""
@@ -289,11 +297,28 @@ class ContextManager:
         """Reset incremental token count (forces recalculation)."""
         self._total_tokens = None
     
+    def _rebuild_role_index(self) -> None:
+        """Rebuild the role-to-indices index."""
+        self._role_index = {}
+        for i, msg in enumerate(self.messages):
+            role = msg.get("role", "unknown")
+            self._role_index.setdefault(role, []).append(i)
+    
+    def find_messages_by_role(self, role: str) -> list[dict[str, Any]]:
+        """Fast lookup of messages by role using index."""
+        if not self._role_index:
+            self._rebuild_role_index()
+        indices = self._role_index.get(role, [])
+        return [self.messages[i] for i in indices if i < len(self.messages)]
+    
     def add_message(self, message: dict[str, Any]) -> None:
         """Add a message with incremental token tracking."""
         tokens = estimate_message_tokens(message)
         self.messages.append(message)
         self._update_token_count(tokens)
+        # Update index
+        role = message.get("role", "unknown")
+        self._role_index.setdefault(role, []).append(len(self.messages) - 1)
     
     def remove_message(self, index: int) -> int:
         """Remove a message and return token delta."""
@@ -301,6 +326,8 @@ class ContextManager:
             tokens = estimate_message_tokens(self.messages[index])
             del self.messages[index]
             self._update_token_count(-tokens)
+            # Invalidate index since indices shifted
+            self._role_index = {}
             return tokens
         return 0
     
@@ -342,15 +369,17 @@ class ContextManager:
         _DEFAULT_TRUNCATE = 2000
         
         for i, m in enumerate(filtered):
-            if m.get("role") != "tool_result":
+            role = m.get("role")
+            if role != "tool_result":
                 continue
             content = m.get("content", "")
-            if not content or len(content) <= _DEFAULT_TRUNCATE:
+            content_len = len(content)
+            if not content or content_len <= _DEFAULT_TRUNCATE:
                 continue
-            
+
             tool_name = m.get("toolName", "")
             is_error = m.get("isError", False)
-            
+
             if is_error:
                 threshold = _ERROR_TRUNCATE
             elif tool_name in _EDIT_TOOLS:
@@ -359,8 +388,8 @@ class ContextManager:
                 threshold = _READ_TOOL_TRUNCATE
             else:
                 threshold = _DEFAULT_TRUNCATE
-            
-            if len(content) <= threshold:
+
+            if content_len <= threshold:
                 continue
             
             content_lines = content.split("\n")
@@ -499,24 +528,43 @@ class ContextManager:
     ) -> list[dict[str, Any]]:
         """Finalize compaction: update state and log results."""
         final_messages = system_messages + new_messages
-        
+
+        # Inject working memory as a system message to preserve critical context
+        protected = self._working_memory.get_protected_content()
+        if protected:
+            wm_text = "\n".join(protected)
+            wm_message = {
+                "role": "system",
+                "content": f"[Working Memory - Critical context preserved during compaction]\n{wm_text}",
+            }
+            wm_tokens = estimate_message_tokens(wm_message)
+            # Only inject if it fits within target
+            current_tokens = estimate_messages_tokens(final_messages)
+            if current_tokens + wm_tokens <= target_tokens:
+                # Insert after the first system message (or at beginning)
+                if final_messages and final_messages[0].get("role") == "system":
+                    final_messages.insert(1, wm_message)
+                else:
+                    final_messages.insert(0, wm_message)
+                logger.debug("Injected working memory: %d tokens", wm_tokens)
+
         # Update incremental token count
         self._total_tokens = estimate_messages_tokens(final_messages)
         self._compaction_level += 1
         self.messages = final_messages
         self._last_compaction_time = time.time()
-        
+
         # Log compaction results
         new_stats = self.get_stats()
         removed_count = len(old_messages) - len(new_messages)
-        
+
         logger.info(
             f"Context compaction level {self._compaction_level}: "
             f"Removed {removed_count} messages, "
             f"Tokens: {old_stats.total_tokens} -> {new_stats.total_tokens} "
             f"(target: {target_tokens}, usage: {new_stats.usage_pct:.0%})"
         )
-        
+
         return final_messages
     
     def force_compact(self) -> list[dict[str, Any]]:

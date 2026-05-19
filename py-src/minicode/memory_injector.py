@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import functools
+import hashlib
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -28,6 +30,7 @@ class MemoryInjector:
         max_injected_memories: int = 5,
         min_relevance: float = 0.3,
         max_tokens_per_memory: int = 200,
+        injection_cooldown: float | None = None,
     ):
         self._memory = memory_manager
         self._max_injected = max_injected_memories
@@ -35,7 +38,18 @@ class MemoryInjector:
         self._max_tokens = max_tokens_per_memory
         self._last_query: str = ""
         self._last_injection_time: float = 0.0
-        self._injection_cooldown: float = 30.0  # Seconds between injections
+        self._injection_cooldown: float = injection_cooldown if injection_cooldown is not None else 30.0
+        self._task_hash: str = ""
+        self._cached_result: list[InjectedMemory] = []
+
+    @staticmethod
+    def _hash_task(task_description: str, current_files: tuple[str, ...] | None) -> str:
+        """Compute a fast hash for cache key."""
+        h = hashlib.md5(task_description.encode(), usedforsecurity=False)
+        if current_files:
+            for f in current_files:
+                h.update(f.encode())
+        return h.hexdigest()
 
     def inject_for_task(
         self,
@@ -55,9 +69,14 @@ class MemoryInjector:
             return []
 
         # Cooldown check - don't inject too frequently
+        task_hash = self._hash_task(task_description, tuple(current_files) if current_files else None)
         if time.time() - self._last_injection_time < self._injection_cooldown:
             if task_description == self._last_query:
-                return []  # Same query, skip
+                return []  # Same query within cooldown, skip
+
+        # Cache check: return cached result for identical tasks (after cooldown)
+        if task_hash == self._task_hash and self._cached_result:
+            return self._cached_result.copy()
 
         self._last_query = task_description
         self._last_injection_time = time.time()
@@ -112,6 +131,8 @@ class MemoryInjector:
             task_description[:50],
         )
 
+        self._task_hash = task_hash
+        self._cached_result = injected.copy()
         return injected
 
     def inject_on_failure(

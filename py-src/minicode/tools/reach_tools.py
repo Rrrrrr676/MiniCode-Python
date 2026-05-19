@@ -12,13 +12,29 @@ from __future__ import annotations
 
 import functools
 import json
+import socket
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from ipaddress import ip_address
 from typing import Any
 
 from minicode.tooling import ToolDefinition, ToolResult
+
+
+# ---------------------------------------------------------------------------
+# Security constants
+# ---------------------------------------------------------------------------
+
+_BLOCKED_HOST_PREFIXES = frozenset({
+    "localhost", "127.", "10.", "192.168.", "172.16.", "172.17.", "172.18.",
+    "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
+    "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+    "0.0.0.0", "::1", "fe80:", "fc00:", "fd00:", "169.254.",
+})
+
+_MAX_CACHE_ENTRIES = 256
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +56,55 @@ def _get_cached(key: str) -> str | None:
 
 def _set_cached(key: str, value: str) -> None:
     _reach_cache[key] = (value, time.time())
+    # Prevent unbounded cache growth
+    if len(_reach_cache) > _MAX_CACHE_ENTRIES:
+        oldest = min(_reach_cache, key=lambda k: _reach_cache[k][1])
+        del _reach_cache[oldest]
+
+
+# ---------------------------------------------------------------------------
+# SSRF Protection
+# ---------------------------------------------------------------------------
+
+def _is_safe_url(url: str) -> tuple[bool, str]:
+    """Check URL is safe (not pointing to internal/private addresses).
+
+    Performs hostname-based blocking and DNS resolution check to prevent
+    SSRF attacks via DNS rebinding.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname
+
+        if not hostname:
+            return False, "Invalid URL: no hostname"
+
+        # Only allow http/https
+        if parsed.scheme not in ("http", "https"):
+            return False, f"URL scheme not allowed: {parsed.scheme}"
+
+        # Block by hostname prefix
+        if any(hostname.lower().startswith(p) for p in _BLOCKED_HOST_PREFIXES):
+            return False, f"Access to internal addresses blocked: {hostname}"
+
+        # Block localhost variants
+        if hostname.lower() in ("localhost", "localhost.localdomain"):
+            return False, "Access to localhost blocked"
+
+        # DNS resolution check - prevent DNS rebinding attacks
+        try:
+            resolved = socket.getaddrinfo(hostname, None)
+            for _, _, _, _, sockaddr in resolved:
+                ip_str = sockaddr[0]
+                ip = ip_address(ip_str)
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                    return False, f"URL resolves to internal address: {ip_str}"
+        except socket.gaierror:
+            pass  # DNS resolution failed, will fail at connection time
+
+        return True, "OK"
+    except Exception as e:
+        return False, f"URL validation failed: {e}"
 
 
 def _with_retry(max_retries: int = 2, delay: float = 1.0):
@@ -78,6 +143,11 @@ def _web_fetch_validate(input_data: dict) -> dict:
 def _web_fetch_run(input_data: dict, context) -> ToolResult:
     url = input_data["url"]
     max_chars = input_data["max_chars"]
+
+    # SSRF protection
+    is_safe, reason = _is_safe_url(url)
+    if not is_safe:
+        return ToolResult(ok=False, output=f"Security Error: {reason}\nURL: {url}")
 
     # Check cache
     cache_key = f"fetch:{url}:{max_chars}"
@@ -437,6 +507,11 @@ def _rss_read_run(input_data: dict, context) -> ToolResult:
     url = input_data["url"]
     max_items = input_data.get("max_items", 5)
 
+    # SSRF protection
+    is_safe, reason = _is_safe_url(url)
+    if not is_safe:
+        return ToolResult(ok=False, output=f"Security Error: {reason}\nURL: {url}")
+
     # Check cache
     cache_key = f"rss:{url}:{max_items}"
     cached = _get_cached(cache_key)
@@ -455,46 +530,45 @@ def _rss_read_run(input_data: dict, context) -> ToolResult:
         with urllib.request.urlopen(req, timeout=30) as response:
             content = response.read().decode("utf-8", errors="replace")
 
-        # Parse RSS (simple regex-based parser)
+        # Parse RSS (precompiled regex patterns)
         import re
+
+        # Precompiled patterns for RSS parsing
+        _RSS_CHANNEL_TITLE = re.compile(r"<channel>.*?<title>(.*?)</title>", re.DOTALL)
+        _RSS_ITEM_PATTERN = re.compile(r"<item>(.*?)</item>", re.DOTALL)
+        _RSS_TITLE = re.compile(r"<title>(.*?)</title>", re.DOTALL)
+        _RSS_LINK = re.compile(r"<link>(.*?)</link>")
+        _RSS_DESC = re.compile(r"<description>(.*?)</description>", re.DOTALL)
+        _RSS_PUBDATE = re.compile(r"<pubDate>(.*?)</pubDate>")
+        _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
         # Extract channel title
         channel_title = "Unknown Feed"
-        title_match = re.search(r"<channel>.*?<title>(.*?)</title>", content, re.DOTALL)
+        title_match = _RSS_CHANNEL_TITLE.search(content)
         if title_match:
-            channel_title = re.sub(r"<[^>]+>", "", title_match.group(1)).strip()
+            channel_title = _HTML_TAG_RE.sub("", title_match.group(1)).strip()
 
         # Extract items
         items = []
-        item_pattern = re.compile(r"<item>(.*?)</item>", re.DOTALL)
-
-        for match in item_pattern.finditer(content):
+        for match in _RSS_ITEM_PATTERN.finditer(content):
             item_content = match.group(1)
 
-            # Extract title
-            title = "No title"
-            title_m = re.search(r"<title>(.*?)</title>", item_content, re.DOTALL)
-            if title_m:
-                title = re.sub(r"<[^>]+>", "", title_m.group(1)).strip()
+            # Extract fields using precompiled patterns
+            title_m = _RSS_TITLE.search(item_content)
+            title = _HTML_TAG_RE.sub("", title_m.group(1)).strip() if title_m else "No title"
 
-            # Extract link
-            link = ""
-            link_m = re.search(r"<link>(.*?)</link>", item_content)
-            if link_m:
-                link = link_m.group(1).strip()
+            link_m = _RSS_LINK.search(item_content)
+            link = link_m.group(1).strip() if link_m else ""
 
-            # Extract description
-            desc = ""
-            desc_m = re.search(r"<description>(.*?)</description>", item_content, re.DOTALL)
+            desc_m = _RSS_DESC.search(item_content)
             if desc_m:
-                desc = re.sub(r"<[^>]+>", "", desc_m.group(1)).strip()
+                desc = _HTML_TAG_RE.sub("", desc_m.group(1)).strip()
                 desc = desc[:200] + "..." if len(desc) > 200 else desc
+            else:
+                desc = ""
 
-            # Extract pub date
-            pub_date = ""
-            pub_m = re.search(r"<pubDate>(.*?)</pubDate>", item_content)
-            if pub_m:
-                pub_date = pub_m.group(1).strip()
+            pub_m = _RSS_PUBDATE.search(item_content)
+            pub_date = pub_m.group(1).strip() if pub_m else ""
 
             items.append({
                 "title": title,

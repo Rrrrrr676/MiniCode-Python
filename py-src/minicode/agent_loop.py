@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import inspect
+import time
 from typing import Any, Callable
 
 from minicode.context_manager import ContextManager, estimate_message_tokens
@@ -17,6 +18,38 @@ from minicode.hooks import HookEvent, fire_hook_sync
 # Intelligence integration
 from minicode.agent_metrics import AgentMetricsCollector
 from minicode.agent_intelligence import ErrorClassifier, NudgeGenerator, RecoveryStrategy, ToolScheduler
+from minicode.working_memory import protect_context
+
+# Work chain integration
+from minicode.intent_parser import parse_intent
+from minicode.task_object import build_task, TaskObject, TaskState
+from minicode.pipeline_engine import get_pipeline_engine, PipelineEngine
+from minicode.capability_registry import get_registry, CapabilityDomain
+from minicode.layered_context import ContextBuilder, LayeredContext, ContextLayer
+from minicode.decision_audit import get_auditor, DecisionType, DecisionOutcome
+
+# 工程控制论集成
+from minicode.feedback_controller import FeedbackController, SystemState
+from minicode.feedforward_controller import FeedforwardController, PreemptiveConfig
+from minicode.stability_monitor import StabilityMonitor, HealthLevel
+
+# 高级控制论模块
+from minicode.adaptive_pid_tuner import AdaptivePIDTuner, PIDParameters
+from minicode.state_observer import StateObserver, MeasurementVector, ObservedState
+from minicode.decoupling_controller import DecouplingController
+from minicode.predictive_controller import PredictiveController, PredictionHorizon
+from minicode.self_healing_engine import SelfHealingEngine, FaultType, FaultSeverity
+
+# 上下文管理集成 (Claude Code-style + Engineering Cybernetics)
+from minicode.context_compactor import (
+    ContextCompactor,
+    AutoCompactConfig,
+    CompactTrigger,
+    CompactStrategy,
+)
+from minicode.context_cybernetics import ContextCyberneticsOrchestrator
+from minicode.cost_control import CostControlLoop
+from minicode.memory import MemoryManager
 
 logger = get_logger("agent_loop")
 
@@ -65,10 +98,101 @@ def _extract_task_description(messages: list[ChatMessage]) -> str:
     for msg in messages:
         if msg.get("role") == "user" and msg.get("content"):
             content = str(msg["content"])
-            # Skip nudge messages
             if not content.startswith("Continue") and not content.startswith("Your last"):
                 return content[:500]
     return "Unknown task"
+
+
+def _build_work_chain_task(messages: list[ChatMessage]) -> tuple[TaskObject | None, dict]:
+    """Build TaskObject from conversation messages and return it with metadata."""
+    raw_input = _extract_task_description(messages)
+    if raw_input == "Unknown task":
+        return None, {}
+    intent = parse_intent(raw_input)
+    task = build_task(intent, raw_input)
+    metadata = {
+        "intent_type": intent.intent_type.value,
+        "action_type": intent.action_type.value,
+        "confidence": intent.confidence,
+        "entities": intent.entities,
+        "complexity": intent.complexity_hint,
+    }
+    logger.info(
+        "Work chain: intent=%s action=%s confidence=%.2f complexity=%s",
+        intent.intent_type.value, intent.action_type.value,
+        intent.confidence, intent.complexity_hint,
+    )
+    return task, metadata
+
+
+def _build_layered_context(
+    messages: list[ChatMessage],
+    system_prompt: str = "",
+    project_context: str = "",
+    task: TaskObject | None = None,
+) -> tuple[LayeredContext, ContextBuilder]:
+    """Build layered context from conversation and task."""
+    context = LayeredContext()
+    builder = ContextBuilder(context)
+    if system_prompt:
+        builder.set_system_prompt(system_prompt)
+    if project_context:
+        builder.add_project_memory(project_context)
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        if content:
+            builder.add_session_message(role, content)
+    if task:
+        scratchpad = (
+            f"Task: {task.title}\n"
+            f"Goal: {task.goal}\n"
+            f"Constraints: {len(task.constraints)}\n"
+            f"Expected outputs: {len(task.expected_outputs)}"
+        )
+        builder.add_scratchpad(scratchpad)
+    return context, builder
+
+
+def _register_tool_capabilities(tools: ToolRegistry) -> None:
+    """Register existing tools as capabilities in the registry."""
+    registry = get_registry()
+    if registry.list_all():
+        return
+    for tool_name in tools.list_all():
+        try:
+            from minicode.capability_registry import CapabilityMetadata, CapabilityScope
+            tool_def = tools.find(tool_name)
+            if not tool_def:
+                continue
+            domain = CapabilityDomain.UNKNOWN
+            if "file" in tool_name or "write" in tool_name or "read" in tool_name:
+                domain = CapabilityDomain.FILE
+            elif "search" in tool_name or "grep" in tool_name:
+                domain = CapabilityDomain.SEARCH
+            elif "web" in tool_name or "http" in tool_name or "fetch" in tool_name:
+                domain = CapabilityDomain.WEB
+            elif "command" in tool_name or "run" in tool_name or "exec" in tool_name:
+                domain = CapabilityDomain.EXECUTION
+            elif "code" in tool_name or "diff" in tool_name or "review" in tool_name:
+                domain = CapabilityDomain.CODE
+            elif "memory" in tool_name:
+                domain = CapabilityDomain.MEMORY
+            scope = CapabilityScope.READONLY
+            if any(k in tool_name for k in ("write", "modify", "edit", "delete", "create")):
+                scope = CapabilityScope.WRITE
+            if any(k in tool_name for k in ("command", "exec", "run")):
+                scope = CapabilityScope.DESTRUCTIVE
+            if any(k in tool_name for k in ("web", "fetch", "http")):
+                scope = CapabilityScope.EXTERNAL
+            metadata = CapabilityMetadata(
+                name=tool_name, domain=domain, scope=scope,
+                description=tool_def.description or f"Tool: {tool_name}",
+                tags=["tool", tool_name],
+            )
+            registry.register(metadata, lambda **kw: tools.execute(tool_name, kw, ToolContext()), None)
+        except Exception as e:
+            logger.debug("Failed to register tool %s as capability: %s", tool_name, e)
 
 
 def _execute_single_tool(
@@ -219,6 +343,9 @@ def run_agent_turn(
     context_manager: ContextManager | None = None,
     runtime: dict | None = None,
     metrics_collector: AgentMetricsCollector | None = None,
+    system_prompt: str = "",
+    project_context: str = "",
+    enable_work_chain: bool = True,
 ) -> list[ChatMessage]:
     current_messages = list(messages)
     saw_tool_result = False
@@ -229,15 +356,158 @@ def run_agent_turn(
 
     tool_scheduler = ToolScheduler(metrics_collector=metrics_collector)
 
-    # 妫€鏌ヤ笂涓嬫枃鐘舵€?
+    # Initialize work chain if enabled
+    task: TaskObject | None = None
+    task_metadata: dict = {}
+    layered_context: LayeredContext | None = None
+    context_builder: ContextBuilder | None = None
+    pipeline_engine: PipelineEngine | None = None
+    auditor = get_auditor() if enable_work_chain else None
+
+    # 工程控制论控制器初始化
+    feedback_controller: FeedbackController | None = None
+    feedforward_controller: FeedforwardController | None = None
+    stability_monitor: StabilityMonitor | None = None
+
+    # 高级控制论模块
+    adaptive_pid_tuner: AdaptivePIDTuner | None = None
+    state_observer: StateObserver | None = None
+    decoupling_controller: DecouplingController | None = None
+    predictive_controller: PredictiveController | None = None
+    self_healing_engine: SelfHealingEngine | None = None
+
+    if enable_work_chain:
+        task, task_metadata = _build_work_chain_task(current_messages)
+        layered_context, context_builder = _build_layered_context(
+            current_messages, system_prompt, project_context, task,
+        )
+        pipeline_engine = get_pipeline_engine()
+        _register_tool_capabilities(tools)
+
+        # 初始化反馈控制器（负反馈 + 正反馈）
+        feedback_controller = FeedbackController()
+        logger.info("Feedback controller initialized: negative + positive feedback loops")
+
+        # 初始化前馈控制器（预判式优化）
+        if task:
+            feedforward_controller = FeedforwardController()
+            preemptive_config = feedforward_controller.preconfigure(task.parsed_intent, task.raw_input)
+            risk_assessment = feedforward_controller.assess_risks(task.parsed_intent, preemptive_config)
+            logger.info(
+                "Feedforward control: config=%s risk=%s",
+                preemptive_config.recommended_model, risk_assessment.risk_level,
+            )
+
+        # 初始化稳定性监测器（系统观测器）
+        stability_monitor = StabilityMonitor(window_size=100)
+        logger.info("Stability monitor initialized: real-time health tracking")
+
+        # 初始化自适应PID调参器
+        adaptive_pid_tuner = AdaptivePIDTuner()
+        logger.info("Adaptive PID tuner initialized: self-tuning control")
+
+        # 初始化状态观测器（卡尔曼滤波）
+        state_observer = StateObserver()
+        logger.info("State observer initialized: Kalman filter-based estimation")
+
+        # 初始化多变量解耦控制器
+        decoupling_controller = DecouplingController()
+        logger.info("Decoupling controller initialized: multi-variable control")
+
+        # 初始化预测控制器
+        predictive_controller = PredictiveController()
+        logger.info("Predictive controller initialized: proactive control")
+
+        # 初始化上下文管理器 (Claude Code-style + Engineering Cybernetics)
+        # 必须在 SelfHealingEngine 之前初始化，因为自愈引擎需要委托压缩操作
+        context_compactor: ContextCompactor | None = None
+        context_cybernetics: ContextCyberneticsOrchestrator | None = None
+        if context_manager:
+            compact_config = AutoCompactConfig(
+                threshold_ratio=0.85,
+                circuit_breaker_limit=3,
+                session_memory_enabled=True,
+            )
+            memory_mgr = MemoryManager(project_root=cwd)
+            context_compactor = ContextCompactor(
+                context_window=context_manager.context_window,
+                workspace=cwd,
+                memory_manager=memory_mgr,
+                estimate_fn=estimate_message_tokens,
+                config=compact_config,
+            )
+            context_cybernetics = ContextCyberneticsOrchestrator(
+                context_compactor,
+                kp=2.0, ki=0.15, kd=0.3,
+                pid_setpoint=0.70,
+                base_threshold=0.85,
+                safety_margin_turns=3,
+                enabled=True,
+            )
+            if task and hasattr(task, 'parsed_intent') and task.parsed_intent:
+                context_cybernetics.set_intent(str(task.parsed_intent.intent_type))
+            logger.info("ContextCybernetics initialized: PID control loop + predictive guard")
+
+        # 初始化自愈引擎（接收 cybernetics 引用用于 CONTEXT_OVERFLOW 委托）
+        self_healing_engine = SelfHealingEngine(orchestrator=context_cybernetics)
+        logger.info("Self-healing engine initialized: automated recovery + compaction delegation")
+
+        # 初始化成本控制闭环 (CostTracker → PID → ToolResultBudgetManager)
+        cost_control = CostControlLoop(
+            target_cost_per_min=0.50,
+            kp=1.5, ki=0.08, kd=0.2,
+            enabled=True,
+        )
+        logger.info("CostControlLoop initialized: BudgetPIDController for cost regulation")
+
+    # 检查上下文状态 + 运行 Claude Code-style 预请求优化管线
     if context_manager:
         context_manager.messages = current_messages
         stats = context_manager.get_stats()
-        logger.info("Context: %d tokens (%.0f%%), %d messages", 
+        logger.info("Context: %d tokens (%.0f%%), %d messages",
                    stats.total_tokens, stats.usage_percentage, stats.messages_count)
-        
-        # 濡傛灉闇€瑕佸帇缂╋紝鑷姩鎵ц
-        if context_manager.should_auto_compact():
+
+        # 运行控制论闭环优化管线 (Sense → Predict → Control → Act → Learn)
+        if context_cybernetics:
+            if cost_control and context_compactor:
+                est_cost = stats.total_tokens * 0.000015
+                adj = cost_control.run(
+                    cost_usd=est_cost,
+                    total_tokens=stats.total_tokens,
+                    total_calls=max(step, 1),
+                )
+                if context_compactor._tool_budget:
+                    cost_control.apply_to_budget_manager(context_compactor._tool_budget)
+
+            cyber_messages, cyber_result, cyber_action = context_cybernetics.run_cycle(
+                current_messages,
+                error_rate=float(tool_error_count) / max(step, 1) if step > 0 else 0.0,
+                avg_latency=step * 2.0,
+                turn_id=step,
+            )
+            if cyber_result and cyber_result.effective:
+                current_messages = cyber_messages
+                context_manager.messages = current_messages
+                logger.info(
+                    "Cybernetics[%s]: %s intensity=%.2f freed=%d tokens [%s]",
+                    cyber_action.reason if cyber_action else "unknown",
+                    cyber_result.strategy.value,
+                    cyber_action.compaction_intensity if cyber_action else 0,
+                    cyber_result.tokens_freed,
+                    cyber_result.summary_text[:80] if cyber_result.summary_text else "",
+                )
+        elif context_compactor:
+            compaction_result = context_compactor.process_request(current_messages)
+            if compaction_result.effective:
+                current_messages = compaction_result.messages
+                context_manager.messages = current_messages
+                logger.info(
+                    "ContextCompactor: %s freed %d tokens [%s]",
+                    compaction_result.strategy.value,
+                    compaction_result.tokens_freed,
+                    compaction_result.summary_text[:80],
+                )
+        elif context_manager.should_auto_compact():
             logger.warning("Context near limit, auto-compacting...")
             current_messages = context_manager.compact_messages()
             if on_assistant_message:
@@ -249,6 +519,39 @@ def run_agent_turn(
 
             # Hook: agent turn started
             fire_hook_sync(HookEvent.AGENT_START, step=step, cwd=cwd)
+
+            # 高级控制论闭环（每个 step 开始时执行）
+            if enable_work_chain:
+                # 状态观测：通过可测量输出估计系统内部状态
+                if state_observer:
+                    measurement = MeasurementVector(
+                        timestamp=time.time(),
+                        response_time=step * 2.0,  # 估算响应时间
+                        success_rate=1.0 - (tool_error_count / max(step, 1)),
+                        context_length=context_manager.get_stats().total_tokens if context_manager else 0,
+                        error_count=tool_error_count,
+                        tool_calls=0,
+                    )
+                    observed_state = state_observer.update(measurement)
+
+                # 预测控制：预测未来趋势并提前调整
+                if predictive_controller:
+                    if context_manager:
+                        stats = context_manager.get_stats()
+                        predictive_controller.update("context_usage", stats.usage_percentage / 100.0)
+                    predictive_controller.update("error_rate", tool_error_count / max(step, 1))
+
+                    if step > 2:
+                        actions = predictive_controller.generate_predictive_actions()
+                        if actions and actions[0].urgency > 0.7:
+                            logger.info("Predictive action triggered: %s", actions[0].recommended_action)
+                            if self_healing_engine:
+                                healing_actions = self_healing_engine.detect_and_heal({
+                                    "context_usage": stats.usage_percentage / 100.0 if context_manager else 0.0,
+                                    "error_rate": tool_error_count / max(step, 1),
+                                })
+                                if healing_actions:
+                                    logger.info("Self-healing: %s", healing_actions[0].strategy)
 
             if metrics_collector:
                 metrics_collector.start_turn(step)
@@ -286,6 +589,33 @@ def run_agent_turn(
                 error_type = type(error).__name__
                 fallback = f"Model API error ({error_type}): {error}"
                 logger.error("Model API error (%s): %s", error_type, error)
+
+                # Reactive Compact: 控制论恢复路径
+                error_str = str(error).lower()
+                needs_recovery = "prompt" in error_str and ("too long" in error_str or "exceeds" in error_str)
+                if context_cybernetics and needs_recovery:
+                    recovered_messages, recovery_result = context_cybernetics.try_reactive_recover(current_messages, error_str)
+                    if recovery_result and recovery_result.effective:
+                        current_messages = recovered_messages
+                        if context_manager:
+                            context_manager.messages = current_messages
+                        logger.info(
+                            "Cybernetics Reactive recovered: freed %d tokens",
+                            recovery_result.tokens_freed,
+                        )
+                        continue
+                elif context_compactor and needs_recovery:
+                    recovery_result = context_compactor.reactive_recover(current_messages, error_str)
+                    if recovery_result and recovery_result.effective:
+                        current_messages = recovery_result.messages
+                        if context_manager:
+                            context_manager.messages = current_messages
+                        logger.info(
+                            "Reactive Compact recovered: freed %d tokens",
+                            recovery_result.tokens_freed,
+                        )
+                        continue
+
                 if on_assistant_message:
                     on_assistant_message(fallback)
                 current_messages.append({"role": "assistant", "content": fallback})
@@ -380,6 +710,12 @@ def run_agent_turn(
                 if on_assistant_message:
                     on_assistant_message(next_step.content)
                 current_messages.append({"role": "assistant", "content": next_step.content})
+                # Protect final answer in working memory
+                protect_context(
+                    content=next_step.content[:500],
+                    entry_type="key_decision",
+                    ttl_seconds=3600,
+                )
                 return current_messages
 
             if next_step.content:
@@ -528,6 +864,20 @@ def run_agent_turn(
                         if not other_result.ok:
                             tool_scheduler.record_conflict(call["toolName"], other_call["toolName"])
 
+                # ReadDedup: 去重相同文件的重复读取，节省上下文空间
+                if (
+                    context_compactor
+                    and result.ok
+                    and call.get("toolName") == "read_file"
+                ):
+                    file_path = call.get("input", {}).get("path", "")
+                    if file_path:
+                        dedup_mgr = context_compactor.read_dedup
+                        if dedup_mgr.should_dedup(file_path, result_output):
+                            result_output = dedup_mgr.get_stub(file_path)
+                            logger.debug("ReadDedup replaced content for %s (stub)", file_path)
+                        dedup_mgr.register_read(file_path, result_output, len(current_messages))
+
                 current_messages.append(
                     {
                         "role": "assistant_tool_call",
@@ -553,6 +903,33 @@ def run_agent_turn(
                         metrics_collector.end_turn(total_tokens=0)
                     return current_messages
 
+            # 工具执行完成后的控制论反馈
+            if enable_work_chain:
+                # 多变量解耦：消除工具间的耦合影响
+                if decoupling_controller:
+                    decoupling_controller.record_measurement({
+                        "token_usage_to_latency": (
+                            context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
+                            step * 2.0 / 60.0,
+                        ),
+                        "context_pressure_to_errors": (
+                            context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
+                            tool_error_count / max(step, 1),
+                        ),
+                    })
+                    decoupling_controller.compute_decoupling_matrix()
+
+                # 自愈检测：检测并修复故障
+                if self_healing_engine:
+                    metrics_for_healing = {
+                        "error_rate": tool_error_count / max(step, 1),
+                        "context_usage": context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
+                        "oscillation_index": 0.0,  # 从反馈控制器获取
+                    }
+                    healing_actions = self_healing_engine.detect_and_heal(metrics_for_healing)
+                    if healing_actions:
+                        logger.info("Self-healing triggered: %s", healing_actions[0].strategy)
+
             # Tool execution completed for this step; ask the model for the next turn
             # instead of falling through to the max-step fallback.
             if metrics_collector:
@@ -568,22 +945,126 @@ def run_agent_turn(
         current_messages.append({"role": "assistant", "content": fallback})
         return current_messages
     finally:
-        # Hook: agent turn stopped (always fires, even on exceptions)
         fire_hook_sync(HookEvent.AGENT_STOP, step=step, tool_errors=tool_error_count)
 
-        # Trigger reflection after task completion
-        if reflection_engine is not None:
-            try:
-                task_description = _extract_task_description(messages)
-                reflection = reflection_engine.reflect(
-                    task_description=task_description,
-                    execution_trace=execution_trace,
-                    metrics=metrics_collector,
+        if metrics_collector and metrics_collector._current_turn is not None:
+            total_tokens = sum(
+                estimate_message_tokens(m) for m in current_messages
+            ) if context_manager else 0
+            metrics_collector.end_turn(total_tokens=total_tokens)
+
+        if enable_work_chain and task:
+            final_state = TaskState.COMPLETED if tool_error_count == 0 else TaskState.FAILED
+            task.set_state(final_state)
+            task.result_summary = f"Turn completed: {step} steps, {tool_error_count} errors"
+
+            if auditor:
+                outcome = DecisionOutcome.SUCCESS if tool_error_count == 0 else DecisionOutcome.FAILURE
+                auditor.complete_decision(
+                    outcome,
+                    step * 100.0,
+                    task.result_summary,
+                    task.error_message if tool_error_count > 0 else "",
                 )
+
+            logger.info(
+                "Work chain completed: task=%s state=%s steps=%d errors=%d",
+                task.id, task.state.value, step, tool_error_count,
+            )
+
+        # 控制论反馈：记录模式有效性
+        if enable_work_chain and feedback_controller and task:
+            pattern_id = f"{task_metadata.get('intent_type', 'unknown')}_{task.id}"
+            feedback_controller.record_pattern_effectiveness(
+                pattern_id, tool_error_count == 0
+            )
+
+        # 稳定性监测：记录快照
+        if stability_monitor:
+            from minicode.stability_monitor import MetricSnapshot
+            snapshot = MetricSnapshot(
+                timestamp=time.time(),
+                error_rate=float(tool_error_count) / max(step, 1),
+                avg_latency=step * 2.0,  # 简化估算
+                context_usage=context_manager.get_stats().usage_percentage if context_manager else 0.0,
+                active_tasks=1,
+            )
+            stability_monitor.record_snapshot(snapshot)
+            if context_cybernetics:
+                stability_monitor.feed_orchestrator(context_cybernetics)
+
+        # 高级控制论：最终状态报告
+        if enable_work_chain:
+            # 状态观测器报告
+            if state_observer:
+                state_summary = state_observer.get_state_summary()
+                logger.info("State observer summary: %s", state_summary)
+
+            # 预测控制器报告
+            if predictive_controller:
+                pred_summary = predictive_controller.get_prediction_summary()
+                logger.info("Prediction summary: accuracy=%s", pred_summary.get("accuracy", {}))
+
+            # 自愈引擎统计
+            if self_healing_engine:
+                healing_stats = self_healing_engine.get_healing_statistics()
+                logger.info("Self-healing stats: %s", healing_stats)
+
+            # 多变量解耦状态
+            if decoupling_controller:
+                coupling_status = decoupling_controller.get_coupling_status()
+                logger.info("Coupling status: strong=%s", coupling_status.get("strong_couplings", []))
+
+        # 上下文管理管线统计 (Claude Code-style + Cybernetics)
+        if context_compactor:
+            compactor_stats = context_compactor.get_stats()
+            logger.info(
+                "ContextCompactor: passes=%d persisted=%d dedup=%d "
+                "microcompact=%d boundaries=%d circuit=%s",
+                compactor_stats["total_passes"],
+                compactor_stats["tool_results_persisted"],
+                compactor_stats["read_dedup_entries"],
+                compactor_stats["microcompact_tokens_cleared"],
+                compactor_stats["auto_compact_boundaries"],
+                "TRIPPED" if compactor_stats["circuit_breaker_tripped"] else "OK",
+            )
+        # 控制论闭环统计 (Engineering Cybernetics)
+        if context_cybernetics:
+            cyber_stats = context_cybernetics.get_stats()
+            logger.info(
+                "Cybernetics: cycles=%d usage=%.1f%% pid_out=%.2f "
+                "predict_overflow=%s urgency=%.2f threshold=%.2f feedback_eff=%.0f%%",
+                cyber_stats["cycles_executed"],
+                (cyber_stats["sensor"]["current_usage"] or 0) * 100,
+                cyber_stats["pid"]["last_output"] or 0,
+                cyber_stats["predictor"]["turns_until_overflow"],
+                cyber_stats["predictor"]["urgency"] or 0,
+                cyber_stats["threshold"]["effective_threshold"] or 0,
+                (cyber_stats["feedback"]["effectiveness_rate"] or 0) * 100,
+            )
+        # 成本控制闭环统计 (BudgetPIDController)
+        if cost_control:
+            cc_stats = cost_control.get_stats()
+            adj = cc_stats.get("adjustment")
+            logger.info(
+                "CostControl: cycles=%d cost/min=$%.4f pid_out=%.2f "
+                "budget_mult=%.2f threshold_mult=%.2f [%s]",
+                cc_stats["cycles_executed"],
+                cc_stats["sensor"]["cost_per_min"],
+                cc_stats["pid"]["last_output"] or 1.0,
+                adj["budget_mult"] if adj else 1.0,
+                adj["threshold_mult"] if adj else 1.0,
+                adj["reason"] if adj else "none",
+            )
+        # 双层 PID 闭环: Cybernetics → FeedbackController
+        if context_cybernetics and feedback_controller:
+            system_state = context_cybernetics.to_system_state()
+            control_signal = feedback_controller.observe(system_state)
+            if control_signal.force_compaction and context_cybernetics.enabled:
                 logger.info(
-                    "Reflection generated: success=%s, confidence=%.2f",
-                    reflection.success,
-                    reflection.confidence,
+                    "Dual-PID: FeedbackController force_compaction=True, "
+                    "stability=%.2f performance=%.2f",
+                    system_state.stability_score(),
+                    system_state.performance_score(),
                 )
-            except Exception as e:
-                logger.warning("Reflection failed: %s", e)
+

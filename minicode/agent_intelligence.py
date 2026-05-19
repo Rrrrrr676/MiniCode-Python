@@ -30,6 +30,111 @@ class ClassifiedError:
     context: dict[str, Any]
 
 
+@dataclass
+class ToolSchedulingSignal:
+    """Observed state used by the tool scheduling controller."""
+
+    call_count: int = 0
+    write_count: int = 0
+    command_count: int = 0
+    error_rate: float = 0.0
+    avg_latency: float = 0.0
+    conflict_count: int = 0
+    recent_failures: int = 0
+
+
+@dataclass
+class ToolSchedulingDecision:
+    """Controller output for tool execution scheduling."""
+
+    max_workers: int
+    concurrency_multiplier: float
+    cooldown_seconds: float = 0.0
+    retry_backoff_multiplier: float = 1.0
+    reasons: list[str] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "max_workers": self.max_workers,
+            "concurrency_multiplier": round(self.concurrency_multiplier, 3),
+            "cooldown_seconds": round(self.cooldown_seconds, 3),
+            "retry_backoff_multiplier": round(self.retry_backoff_multiplier, 3),
+            "reasons": list(self.reasons or []),
+        }
+
+
+class ToolSchedulerController:
+    """Feedback controller for tool concurrency and retry pressure.
+
+    Existing ToolScheduler decides which calls are concurrency-safe. This
+    controller decides how aggressively to run that safe batch, using runtime
+    pressure signals such as error rate, latency, conflicts, and recent
+    failures.
+    """
+
+    def decide(self, signal: ToolSchedulingSignal) -> ToolSchedulingDecision:
+        if signal.call_count <= 0:
+            return ToolSchedulingDecision(
+                max_workers=1,
+                concurrency_multiplier=0.0,
+                reasons=["no tool calls"],
+            )
+
+        multiplier = 1.0
+        cooldown = 0.0
+        backoff = 1.0
+        reasons: list[str] = []
+
+        if signal.write_count > 0:
+            multiplier *= 0.65
+            reasons.append("write tools present")
+
+        if signal.command_count > 0:
+            multiplier *= 0.55
+            backoff *= 1.5
+            reasons.append("command tools present")
+
+        if signal.error_rate >= 0.5:
+            multiplier *= 0.35
+            cooldown += 1.0
+            backoff *= 2.0
+            reasons.append("high tool error rate")
+        elif signal.error_rate >= 0.2:
+            multiplier *= 0.65
+            cooldown += 0.25
+            backoff *= 1.3
+            reasons.append("elevated tool error rate")
+
+        if signal.avg_latency >= 30.0:
+            multiplier *= 0.50
+            cooldown += 0.5
+            reasons.append("high tool latency")
+        elif signal.avg_latency >= 10.0:
+            multiplier *= 0.75
+            reasons.append("elevated tool latency")
+
+        if signal.conflict_count > 0:
+            multiplier *= max(0.35, 1.0 - 0.15 * signal.conflict_count)
+            reasons.append("known tool conflicts")
+
+        if signal.recent_failures > 0:
+            multiplier *= max(0.40, 1.0 - 0.10 * signal.recent_failures)
+            cooldown += min(2.0, 0.25 * signal.recent_failures)
+            backoff *= min(3.0, 1.0 + 0.25 * signal.recent_failures)
+            reasons.append("recent tool failures")
+
+        multiplier = max(0.15, min(1.0, multiplier))
+        max_workers = max(1, min(signal.call_count, int(round(signal.call_count * multiplier))))
+
+        return ToolSchedulingDecision(
+            max_workers=max_workers,
+            concurrency_multiplier=multiplier,
+            cooldown_seconds=cooldown,
+            retry_backoff_multiplier=backoff,
+            reasons=reasons or ["healthy scheduling pressure"],
+        )
+
+
 class ErrorClassifier:
     """Classifies errors and recommends recovery strategies."""
 
@@ -212,9 +317,15 @@ class NudgeGenerator:
 class ToolScheduler:
     """Intelligently schedules tool execution based on historical performance."""
 
-    def __init__(self, metrics_collector: "AgentMetricsCollector | None" = None):
+    def __init__(
+        self,
+        metrics_collector: "AgentMetricsCollector | None" = None,
+        controller: ToolSchedulerController | None = None,
+    ):
         self._metrics = metrics_collector
+        self._controller = controller or ToolSchedulerController()
         self._conflict_history: dict[frozenset[str], int] = {}  # Track tool pair conflicts
+        self._last_decision: ToolSchedulingDecision | None = None
 
     def schedule_calls(self, calls: list[dict], tools: Any) -> tuple[list[dict], list[dict]]:
         """Partition calls into concurrent and serial batches based on intelligence.
@@ -278,9 +389,21 @@ class ToolScheduler:
         pair = frozenset({tool1, tool2})
         self._conflict_history[pair] = self._conflict_history.get(pair, 0) + 1
 
-    def get_recommended_max_workers(self, concurrent_calls: list[dict]) -> int:
+    def get_recommended_max_workers(
+        self,
+        concurrent_calls: list[dict],
+        *,
+        error_rate: float = 0.0,
+        avg_latency: float = 0.0,
+        recent_failures: int = 0,
+    ) -> int:
         """Recommend max workers based on call characteristics."""
         if not concurrent_calls:
+            self._last_decision = ToolSchedulingDecision(
+                max_workers=1,
+                concurrency_multiplier=0.0,
+                reasons=["no concurrent calls"],
+            )
             return 1
 
         base = min(len(concurrent_calls), 8)
@@ -297,4 +420,27 @@ class ToolScheduler:
         if cmd_count > 0:
             base = min(base, 3)
 
-        return max(1, base)
+        signal = ToolSchedulingSignal(
+            call_count=base,
+            write_count=write_count,
+            command_count=cmd_count,
+            error_rate=error_rate,
+            avg_latency=avg_latency,
+            conflict_count=self._count_conflicts(concurrent_calls),
+            recent_failures=recent_failures,
+        )
+        self._last_decision = self._controller.decide(signal)
+        return max(1, min(base, self._last_decision.max_workers))
+
+    @property
+    def last_decision(self) -> ToolSchedulingDecision | None:
+        return self._last_decision
+
+    def _count_conflicts(self, calls: list[dict]) -> int:
+        count = 0
+        for i, call in enumerate(calls):
+            for other in calls[i + 1:]:
+                pair = frozenset({call["toolName"], other["toolName"]})
+                if self._conflict_history.get(pair, 0) >= 2:
+                    count += 1
+        return count

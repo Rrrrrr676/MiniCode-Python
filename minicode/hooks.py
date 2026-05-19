@@ -392,4 +392,11 @@ async def fire_hook(event: HookEvent, **kwargs: Any) -> list[Any]:
 
 def fire_hook_sync(event: HookEvent, **kwargs: Any) -> list[Any]:
     """Fire a hook event synchronously (convenience function)."""
+    # Early return if no listeners registered for this event
+    if not _hook_manager._hooks.get(event):
+        return []
+    # Cache context dict to avoid repeated creation
+    context = kwargs.get("context") or {}
+    if context is not kwargs.get("context"):
+        kwargs = {**kwargs, "context": context}
     return _hook_manager.fire_sync(event, **kwargs)

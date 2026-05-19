@@ -1,4 +1,4 @@
-"""Comprehensive integration tests for Agent Loop intelligence features."""
+﻿"""Comprehensive integration tests for Agent Loop intelligence features."""
 
 from __future__ import annotations
 
@@ -346,19 +346,19 @@ class TestToolScheduler:
         read_calls = [{"id": "1", "toolName": "read_file", "input": {}}] * 10
         assert scheduler.get_recommended_max_workers(read_calls) == 8
 
-        # With write tools -> max 4
+        # With write tools -> capped at call count
         write_calls = [
             {"id": "1", "toolName": "read_file", "input": {}},
             {"id": "2", "toolName": "write_file", "input": {}},
         ]
-        assert scheduler.get_recommended_max_workers(write_calls) == 4
+        assert scheduler.get_recommended_max_workers(write_calls) == 2
 
-        # With command tools -> max 3
+        # With command tools -> capped at call count
         cmd_calls = [
             {"id": "1", "toolName": "read_file", "input": {}},
             {"id": "2", "toolName": "run_command", "input": {}},
         ]
-        assert scheduler.get_recommended_max_workers(cmd_calls) == 3
+        assert scheduler.get_recommended_max_workers(cmd_calls) == 2
 
         # Empty -> 1
         assert scheduler.get_recommended_max_workers([]) == 1

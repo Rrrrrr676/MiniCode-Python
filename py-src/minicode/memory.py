@@ -23,6 +23,7 @@ import threading
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +189,7 @@ def _recover_entries(data: dict, memory_json_path: Path) -> list[dict]:
 # Tokenize text into lowercase words, individual CJK chars, and CJK bigrams
 _WORD_RE = re.compile(r'[a-zA-Z0-9]+|[\u4e00-\u9fff]')
 _CJK_BIGRAM_RE = re.compile(r'[\u4e00-\u9fff]{2}')
+_TAG_RE = re.compile(r'`([^`]+)`')
 
 # Common code terminology expansions (bidirectional)
 _CODE_TERM_EXPANSIONS: dict[str, list[str]] = {
@@ -306,15 +308,18 @@ def _expand_query_terms(terms: list[str]) -> list[str]:
     return expanded
 
 
-def _tokenize(text: str) -> list[str]:
+@lru_cache(maxsize=1024)
+def _tokenize(text: str) -> tuple[str, ...]:
     """Tokenize text into words for TF-IDF scoring.
 
     Handles alphanumeric words, individual CJK characters, and CJK bigrams
     for better Chinese text semantic matching.
+
+    使用 @lru_cache 缓存分词结果，返回 tuple 以支持缓存。
     """
     tokens = [w.lower() for w in _WORD_RE.findall(text)]
     cjk_bigrams = [match.lower() for match in _CJK_BIGRAM_RE.findall(text)]
-    return tokens + cjk_bigrams
+    return tuple(tokens + cjk_bigrams)
 
 
 # BM25 parameters
@@ -431,6 +436,17 @@ def get_tfidf_keywords(text: str, top_n: int = 10) -> list[tuple[str, float]]:
 # Auto-classification heuristics
 # ---------------------------------------------------------------------------
 
+_CATEGORY_TO_TAGS: dict[str, list[str]] = {
+    "architecture": ["design-pattern"],
+    "code-pattern": ["function"],
+    "testing": ["test"],
+    "configuration": ["config"],
+    "workflow": ["git"],
+    "security": ["security"],
+    "performance": ["optimization"],
+    "convention": ["style"],
+}
+
 _CLASSIFICATION_RULES: list[tuple[str, list[str], list[str]]] = [
     ("architecture", ["architecture", "design", "pattern", "api", "rest", "backend", "service", "架构", "设计", "模式"]),
     ("code-pattern", ["function", "method", "def", "class", "函数", "方法", "类"]),
@@ -459,24 +475,11 @@ def _auto_classify_content(content: str) -> tuple[str, list[str]]:
     category_scores: dict[str, int] = {}
     matched_tags: list[str] = []
 
-    category_to_tags = {
-        "architecture": ["design-pattern"],
-        "code-pattern": ["function"],
-        "testing": ["test"],
-        "configuration": ["config"],
-        "workflow": ["git"],
-        "security": ["security"],
-        "performance": ["optimization"],
-        "convention": ["style"],
-    }
-
-    for category, keywords in (
-        (rule[0], rule[1]) for rule in _CLASSIFICATION_RULES
-    ):
+    for category, keywords in _CLASSIFICATION_RULES:
         score = sum(1 for kw in keywords if kw in content_lower)
         if score > 0:
             category_scores[category] = score
-            matched_tags.extend(category_to_tags.get(category, []))
+            matched_tags.extend(_CATEGORY_TO_TAGS.get(category, []))
 
     if not category_scores:
         return "general", []
@@ -510,7 +513,29 @@ class MemoryEntry:
     updated_at: float = field(default_factory=time.time)
     tags: list[str] = field(default_factory=list)
     usage_count: int = 0  # How often this was referenced
-    
+    _cached_tokens: list[str] | None = None  # Precomputed tokens for search
+
+    def __hash__(self) -> int:
+        """Make MemoryEntry hashable for use in sets."""
+        return hash(self.id)
+
+    def __eq__(self, other: object) -> bool:
+        """Equality based on ID for set operations."""
+        if not isinstance(other, MemoryEntry):
+            return NotImplemented
+        return self.id == other.id
+
+    def get_tokens(self) -> list[str]:
+        """Get precomputed tokens, computing if needed."""
+        if self._cached_tokens is None:
+            text = f"{self.content} {self.category} {' '.join(self.tags)}"
+            self._cached_tokens = _tokenize(text)
+        return self._cached_tokens
+
+    def invalidate_tokens(self) -> None:
+        """Invalidate cached tokens after mutation."""
+        self._cached_tokens = None
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -541,11 +566,69 @@ class MemoryEntry:
 
 @dataclass
 class MemoryFile:
-    """Represents a MEMORY.md file content."""
+    """Represents a MEMORY.md file content with optimized indexing."""
     scope: MemoryScope
     entries: list[MemoryEntry] = field(default_factory=list)
     max_entries: int = 200  # Claude Code limit
     max_size_bytes: int = 25 * 1024  # 25KB limit
+    
+    # Search indices for O(1) lookup
+    _id_index: dict[str, MemoryEntry] = field(default_factory=dict, repr=False)
+    _tag_index: dict[str, set[MemoryEntry]] = field(default_factory=dict, repr=False)
+    _category_index: dict[str, list[MemoryEntry]] = field(default_factory=dict, repr=False)
+    _tokens_cache: dict[str, list[str]] = field(default_factory=dict, repr=False)
+    _idf_cache: dict[str, float] | None = field(default=None, repr=False)
+    _avgdl_cache: float = field(default=0.0, repr=False)
+    _cache_dirty: bool = field(default=True, repr=False)
+    
+    def __post_init__(self):
+        """Initialize indices after creation."""
+        self._rebuild_indices()
+    
+    def _rebuild_indices(self) -> None:
+        """Rebuild all search indices."""
+        self._id_index.clear()
+        self._tag_index.clear()
+        self._category_index.clear()
+        self._tokens_cache.clear()
+        
+        for entry in self.entries:
+            self._id_index[entry.id] = entry
+            
+            # Build tag index
+            for tag in entry.tags:
+                if tag not in self._tag_index:
+                    self._tag_index[tag] = set()
+                self._tag_index[tag].add(entry)
+            
+            # Build category index
+            cat = entry.category
+            if cat not in self._category_index:
+                self._category_index[cat] = []
+            self._category_index[cat].append(entry)
+            
+            # Precompute tokens
+            self._tokens_cache[entry.id] = entry.get_tokens()
+        
+        # Precompute IDF and avgdl for BM25
+        if self.entries:
+            entry_tokens = [self._tokens_cache[e.id] for e in self.entries]
+            self._idf_cache = _compute_idf(entry_tokens)
+            self._avgdl_cache = _compute_avgdl(entry_tokens)
+        else:
+            self._idf_cache = {}
+            self._avgdl_cache = 0.0
+        
+        self._cache_dirty = False
+    
+    def _invalidate_cache(self) -> None:
+        """Mark cache as needing rebuild."""
+        self._cache_dirty = True
+    
+    def _ensure_cache_valid(self) -> None:
+        """Rebuild cache if dirty."""
+        if self._cache_dirty:
+            self._rebuild_indices()
     
     @property
     def size_bytes(self) -> int:
@@ -555,39 +638,48 @@ class MemoryFile:
     def add_entry(self, entry: MemoryEntry) -> None:
         """Add entry, respecting limits."""
         self.entries.append(entry)
+        self._invalidate_cache()
         self._enforce_limits()
+        # Ensure cache is rebuilt after limit enforcement
+        self._ensure_cache_valid()
     
     def update_entry(self, entry_id: str, content: str) -> bool:
-        """Update existing entry."""
-        for entry in self.entries:
-            if entry.id == entry_id:
-                entry.content = content
-                entry.updated_at = time.time()
-                return True
+        """Update existing entry using index."""
+        self._ensure_cache_valid()
+        entry = self._id_index.get(entry_id)
+        if entry is not None:
+            entry.content = content
+            entry.updated_at = time.time()
+            entry.invalidate_tokens()
+            self._invalidate_cache()
+            return True
         return False
     
     def delete_entry(self, entry_id: str) -> bool:
-        """Delete entry."""
-        for i, entry in enumerate(self.entries):
-            if entry.id == entry_id:
-                self.entries.pop(i)
-                return True
+        """Delete entry using index."""
+        self._ensure_cache_valid()
+        entry = self._id_index.get(entry_id)
+        if entry is not None:
+            self.entries.remove(entry)
+            self._invalidate_cache()
+            return True
         return False
     
     def get_entries_by_category(self, category: str) -> list[MemoryEntry]:
-        """Get entries filtered by category."""
-        return [e for e in self.entries if e.category == category]
+        """Get entries filtered by category using index."""
+        self._ensure_cache_valid()
+        return list(self._category_index.get(category, []))
     
     def search(self, query: str) -> list[MemoryEntry]:
         """Search entries by keyword with BM25 relevance scoring.
 
-        Combines BM25 semantic relevance with usage frequency for
-        better result ranking than simple substring matching.
-        Query terms are expanded using code terminology dictionary.
-        Exact tag matches receive highest priority scores.
+        Uses precomputed indices for O(1) lookups and cached BM25
+        statistics for faster repeated searches.
         """
         if not self.entries:
             return []
+
+        self._ensure_cache_valid()
 
         query_tokens = _tokenize(query)
         query_tokens = _expand_query_terms(query_tokens)
@@ -597,17 +689,18 @@ class MemoryFile:
         query_lower = query.lower()
         query_terms = query_lower.split()
 
-        entry_tokens = []
-        for entry in self.entries:
-            text = f"{entry.content} {entry.category} {' '.join(entry.tags)}"
-            entry_tokens.append(_tokenize(text))
+        # Fast path: exact tag match via index
+        if query_lower in self._tag_index:
+            return list(self._tag_index[query_lower])
 
-        idf = _compute_idf(entry_tokens)
-        avgdl = _compute_avgdl(entry_tokens)
+        now = time.time()
+        idf = self._idf_cache
+        avgdl = self._avgdl_cache
 
         scored: list[tuple[float, MemoryEntry]] = []
-        for i, entry in enumerate(self.entries):
-            bm25 = _bm25_score(query_tokens, entry_tokens[i], idf, avgdl)
+        for entry in self.entries:
+            entry_tokens = self._tokens_cache.get(entry.id, entry.get_tokens())
+            bm25 = _bm25_score(query_tokens, entry_tokens, idf, avgdl)
 
             substring_score = 0.0
             content_lower = entry.content.lower()
@@ -617,17 +710,19 @@ class MemoryFile:
                 substring_score = 1.0
 
             tag_score = 0.0
+            entry_tags = entry.tags
+            entry_category_lower = entry.category.lower()
             exact_tag_match = any(
-                tag.lower() == query_lower for tag in entry.tags
+                tag.lower() == query_lower for tag in entry_tags
             )
             partial_tag_match = any(
-                query_lower in tag.lower() for tag in entry.tags
+                query_lower in tag.lower() for tag in entry_tags
             )
             if exact_tag_match:
                 tag_score = 5.0
             elif partial_tag_match:
                 tag_score = 1.5
-            if query_lower in entry.category.lower():
+            if query_lower in entry_category_lower:
                 tag_score += 1.0
 
             match_score = bm25 + substring_score + tag_score
@@ -636,7 +731,7 @@ class MemoryFile:
 
             usage_bonus = math.log1p(entry.usage_count) * 0.3
 
-            age_hours = (time.time() - entry.updated_at) / 3600
+            age_hours = (now - entry.updated_at) / 3600
             recency_bonus = 1.0 / (1.0 + age_hours / 24.0) * 0.5
 
             total_score = match_score + usage_bonus + recency_bonus
@@ -647,18 +742,24 @@ class MemoryFile:
     
     def _enforce_limits(self) -> None:
         """Remove oldest entries if exceeding limits."""
+        removed = False
         # Check entry count
         while len(self.entries) > self.max_entries:
             self.entries.pop(0)  # Remove oldest
+            removed = True
         
         # Check size
         while self.size_bytes > self.max_size_bytes and self.entries:
             self.entries.pop(0)
+            removed = True
+        
+        if removed:
+            self._invalidate_cache()
     
     def format_as_markdown(self, include_header: bool = True) -> str:
         """Format as MEMORY.md content."""
         lines = []
-        
+
         if include_header:
             scope_names = {
                 MemoryScope.USER: "User Memory",
@@ -669,14 +770,12 @@ class MemoryFile:
             lines.append("")
             lines.append(f"*Last updated: {time.strftime('%Y-%m-%d %H:%M')}*")
             lines.append("")
-        
+
         # Group by category
         categories: dict[str, list[MemoryEntry]] = {}
         for entry in self.entries:
-            if entry.category not in categories:
-                categories[entry.category] = []
-            categories[entry.category].append(entry)
-        
+            categories.setdefault(entry.category, []).append(entry)
+
         for category, entries in categories.items():
             lines.append(f"## {category.title()}")
             lines.append("")
@@ -684,7 +783,7 @@ class MemoryFile:
                 tags_str = f" `{' '.join(entry.tags)}`" if entry.tags else ""
                 lines.append(f"- {entry.content}{tags_str}")
             lines.append("")
-        
+
         return "\n".join(lines)
 
 
@@ -712,7 +811,7 @@ class MemoryPaths:
 
 
 class MemoryManager:
-    """Manages layered memory system."""
+    """Manages layered memory system with optimized indexing and batch I/O."""
     
     def __init__(
         self,
@@ -737,6 +836,13 @@ class MemoryManager:
         self._search_cache_lock = threading.Lock()
         self._search_cache_max = 1000
         self._search_cache_ttl = 60.0
+        
+        # Batch save optimization
+        self._dirty_scopes: set[MemoryScope] = set()
+        self._save_lock = threading.Lock()
+        self._batch_save_interval = 5.0  # seconds
+        self._last_batch_save = time.time()
+        self._batch_save_enabled = True
     
     def _load_all(self) -> None:
         """Load all memory files."""
@@ -873,29 +979,28 @@ class MemoryManager:
         lines = content.split("\n")
         current_category = "general"
         entry_counter = 0
-        
+
         for line in lines:
             line = line.strip()
-            
+
             # Skip headers and metadata
             if line.startswith("#") or line.startswith("*") or not line:
                 if line.startswith("## "):
                     current_category = line[3:].strip().lower()
                 continue
-            
+
             # Parse list items
             if line.startswith("- "):
                 entry_content = line[2:]
-                
+
                 # Extract tags
                 tags = []
                 if "`" in entry_content:
-                    import re
-                    tag_matches = re.findall(r"`([^`]+)`", entry_content)
+                    tag_matches = _TAG_RE.findall(entry_content)
                     for tag_match in tag_matches:
                         tags.extend(tag_match.split())
-                    entry_content = re.sub(r"`[^`]+`", "", entry_content).strip()
-                
+                    entry_content = _TAG_RE.sub("", entry_content).strip()
+
                 entry_counter += 1
                 entry = MemoryEntry(
                     id=f"{scope.value}-{entry_counter}",
@@ -948,6 +1053,30 @@ class MemoryManager:
         with self._search_cache_lock:
             self._search_cache.clear()
     
+    def _mark_dirty(self, scope: MemoryScope) -> None:
+        """Mark scope as needing save."""
+        self._dirty_scopes.add(scope)
+        self._invalidate_search_cache()
+    
+    def _maybe_batch_save(self, scope: MemoryScope) -> None:
+        """Save scope immediately or defer for batch."""
+        if not self._batch_save_enabled:
+            self._save_scope(scope)
+            return
+        
+        self._mark_dirty(scope)
+        now = time.time()
+        if now - self._last_batch_save >= self._batch_save_interval:
+            self._flush_dirty_scopes()
+    
+    def _flush_dirty_scopes(self) -> None:
+        """Save all dirty scopes."""
+        with self._save_lock:
+            for scope in list(self._dirty_scopes):
+                self._save_scope(scope)
+            self._dirty_scopes.clear()
+            self._last_batch_save = time.time()
+    
     def add_entry(
         self,
         scope: MemoryScope,
@@ -989,66 +1118,66 @@ class MemoryManager:
         )
 
         self.memories[scope].add_entry(entry)
-        self._save_scope(scope)
-        self._invalidate_search_cache()
+        self._maybe_batch_save(scope)
         return entry
     
     def update_entry(self, scope: MemoryScope, entry_id: str, content: str) -> bool:
         """Update an existing entry."""
         if self.memories[scope].update_entry(entry_id, content):
-            self._save_scope(scope)
+            self._maybe_batch_save(scope)
             return True
         return False
     
     def delete_entry(self, scope: MemoryScope, entry_id: str) -> bool:
         """Delete an entry."""
         if self.memories[scope].delete_entry(entry_id):
-            self._save_scope(scope)
+            self._maybe_batch_save(scope)
             return True
         return False
 
     def add_tag(self, scope: MemoryScope, entry_id: str, tag: str) -> bool:
-        """Add a tag to an entry."""
-        for entry in self.memories[scope].entries:
-            if entry.id == entry_id:
-                if tag not in entry.tags:
-                    entry.tags.append(tag)
-                    self._save_scope(scope)
-                return True
+        """Add a tag to an entry using index."""
+        self.memories[scope]._ensure_cache_valid()
+        entry = self.memories[scope]._id_index.get(entry_id)
+        if entry is not None:
+            if tag not in entry.tags:
+                entry.tags.append(tag)
+                self.memories[scope]._invalidate_cache()
+                self._maybe_batch_save(scope)
+            return True
         return False
 
     def remove_tag(self, scope: MemoryScope, entry_id: str, tag: str) -> bool:
-        """Remove a tag from an entry."""
-        for entry in self.memories[scope].entries:
-            if entry.id == entry_id:
-                if tag in entry.tags:
-                    entry.tags.remove(tag)
-                    self._save_scope(scope)
-                return True
+        """Remove a tag from an entry using index."""
+        self.memories[scope]._ensure_cache_valid()
+        entry = self.memories[scope]._id_index.get(entry_id)
+        if entry is not None:
+            if tag in entry.tags:
+                entry.tags.remove(tag)
+                self.memories[scope]._invalidate_cache()
+                self._maybe_batch_save(scope)
+            return True
         return False
 
     def search_by_tag(self, scope: MemoryScope, tag: str) -> list[MemoryEntry]:
-        """Search entries by tag."""
-        return [
-            entry for entry in self.memories[scope].entries
-            if tag in entry.tags
-        ]
+        """Search entries by tag using index."""
+        self.memories[scope]._ensure_cache_valid()
+        return list(self.memories[scope]._tag_index.get(tag, set()))
 
     def get_all_tags(self, scope: MemoryScope) -> set[str]:
-        """Get all unique tags in a scope."""
-        tags: set[str] = set()
-        for entry in self.memories[scope].entries:
-            tags.update(entry.tags)
-        return tags
+        """Get all unique tags in a scope using index."""
+        self.memories[scope]._ensure_cache_valid()
+        return set(self.memories[scope]._tag_index.keys())
 
     def get_tags_by_category(self, scope: MemoryScope) -> dict[str, list[str]]:
-        """Get tags grouped by category."""
-        category_tags: dict[str, set[str]] = {}
+        """Get tags grouped by category using index."""
+        self.memories[scope]._ensure_cache_valid()
+        result: dict[str, set[str]] = {}
         for entry in self.memories[scope].entries:
-            if entry.category not in category_tags:
-                category_tags[entry.category] = set()
-            category_tags[entry.category].update(entry.tags)
-        return {cat: sorted(list(tags)) for cat, tags in category_tags.items()}
+            if entry.category not in result:
+                result[entry.category] = set()
+            result[entry.category].update(entry.tags)
+        return {cat: sorted(list(tags)) for cat, tags in result.items()}
 
     def search(
         self,
@@ -1084,17 +1213,15 @@ class MemoryManager:
 
         # Apply minimum relevance threshold
         # (entries are already scored by MemoryFile.search)
-        if min_relevance > 0:
-            # Normalize scores to 0-1 range for threshold comparison
-            if results:
-                max_score = max(
-                    self._score_entry(e, _tokenize(query)) for e in results
-                )
-                if max_score > 0:
-                    results = [
-                        e for e in results
-                        if self._score_entry(e, _tokenize(query)) / max_score >= min_relevance
-                    ]
+        if min_relevance > 0 and results:
+            query_tokens = _tokenize(query)
+            scores = [self._score_entry(e, query_tokens) for e in results]
+            max_score = max(scores) if scores else 0
+            if max_score > 0:
+                results = [
+                    e for e, s in zip(results, scores)
+                    if s / max_score >= min_relevance
+                ]
 
         # Results are already ranked by MemoryFile.search()
         # Deduplicate by content (keep highest-scored)
@@ -1131,13 +1258,15 @@ class MemoryManager:
             substring_score = 1.0
 
         tag_score = 0.0
-        exact_tag_match = any(tag.lower() == query_lower for tag in entry.tags)
-        partial_tag_match = any(query_lower in tag.lower() for tag in entry.tags)
+        entry_tags = entry.tags
+        entry_category_lower = entry.category.lower()
+        exact_tag_match = any(tag.lower() == query_lower for tag in entry_tags)
+        partial_tag_match = any(query_lower in tag.lower() for tag in entry_tags)
         if exact_tag_match:
             tag_score = 5.0
         elif partial_tag_match:
             tag_score = 1.5
-        if query_lower in entry.category.lower():
+        if query_lower in entry_category_lower:
             tag_score += 1.0
 
         usage_bonus = math.log1p(entry.usage_count) * 0.3
@@ -1293,6 +1422,7 @@ class MemoryManager:
     def clear_scope(self, scope: MemoryScope) -> None:
         """Clear all entries in a scope."""
         self.memories[scope] = MemoryFile(scope=scope)
+        self._flush_dirty_scopes()
         self._save_scope(scope)
 
     def handle_user_memory_input(self, user_input: str) -> str | None:
@@ -1460,6 +1590,8 @@ class MemoryManager:
             final_entries.append(entry_a)
 
         self.memories[scope].entries = final_entries
+        self.memories[scope]._invalidate_cache()
+        self._flush_dirty_scopes()
         self._save_scope(scope)
 
         return {

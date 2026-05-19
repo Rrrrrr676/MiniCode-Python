@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import functools
 import json
 import os
 import sys
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -216,6 +218,10 @@ class PermissionManager:
         self.session_denied_edits: set[str] = set()
         self.turn_allowed_edits: set[str] = set()
         self.turn_allow_all_edits = False
+        # Cache for path access checks to avoid repeated filesystem checks
+        self._path_check_cache: dict[str, tuple[bool, float]] = {}
+        self._path_cache_ttl = 60.0  # 60 seconds
+        self._path_cache_max_size = 512  # Prevent unbounded growth
         self._initialize()
 
     def _initialize(self) -> None:
@@ -260,24 +266,47 @@ class PermissionManager:
             }
         )
 
+    def _update_path_cache(self, path: str, allowed: bool) -> None:
+        """Update path check cache with size limit."""
+        now = time.time()
+        self._path_check_cache[path] = (allowed, now)
+        # Prevent unbounded growth
+        if len(self._path_check_cache) > self._path_cache_max_size:
+            # Remove oldest 25% of entries
+            sorted_items = sorted(
+                self._path_check_cache.items(),
+                key=lambda x: x[1][1]
+            )
+            for key, _ in sorted_items[:len(sorted_items) // 4]:
+                del self._path_check_cache[key]
+
     def ensure_path_access(self, target_path: str, intent: str) -> None:
         normalized_target = _normalize_path(target_path)
+        
+        # Check cache first (avoids repeated checks for same path)
+        now = time.time()
+        cached = self._path_check_cache.get(normalized_target)
+        if cached is not None:
+            allowed, cached_at = cached
+            if now - cached_at < self._path_cache_ttl:
+                if allowed:
+                    return
+                raise RuntimeError(f"Access denied for path outside cwd: {normalized_target}")
         
         # Fast path: check workspace root first (most common case)
         # workspace_root is already normalized, so no need for Path.resolve() again
         if _is_within_directory(self.workspace_root, normalized_target):
+            self._update_path_cache(normalized_target, True)
             return
         
         # Check denial sets first (fail fast)
         if normalized_target in self.session_denied_paths or _matches_directory_prefix(normalized_target, self.denied_directory_prefixes):
+            self._update_path_cache(normalized_target, False)
             raise RuntimeError(f"Access denied for path outside cwd: {normalized_target}")
         
         # Check approval sets
         if normalized_target in self.session_allowed_paths or _matches_directory_prefix(normalized_target, self.allowed_directory_prefixes):
-            return
-        if normalized_target in self.session_denied_paths or _matches_directory_prefix(normalized_target, self.denied_directory_prefixes):
-            raise RuntimeError(f"Access denied for path outside cwd: {normalized_target}")
-        if normalized_target in self.session_allowed_paths or _matches_directory_prefix(normalized_target, self.allowed_directory_prefixes):
+            self._update_path_cache(normalized_target, True)
             return
         
         # Auto mode risk assessment for path access
@@ -314,16 +343,19 @@ class PermissionManager:
         decision = result.get("decision")
         if decision == "allow_once":
             self.session_allowed_paths.add(normalized_target)
+            self._update_path_cache(normalized_target, True)
             return
         if decision == "allow_always":
             self.allowed_directory_prefixes.add(scope_directory)
             self._persist()
+            self._update_path_cache(normalized_target, True)
             return
         if decision == "deny_always":
             self.denied_directory_prefixes.add(scope_directory)
             self._persist()
         else:
             self.session_denied_paths.add(normalized_target)
+        self._update_path_cache(normalized_target, False)
         raise RuntimeError(f"Access denied for path outside cwd: {normalized_target}")
 
     def ensure_command(
