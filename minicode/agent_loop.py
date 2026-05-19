@@ -29,6 +29,7 @@ from minicode.layered_context import ContextBuilder, LayeredContext, ContextLaye
 from minicode.decision_audit import get_auditor, DecisionType, DecisionOutcome
 
 # 工程控制论集成
+from minicode.cybernetic_supervisor import CyberneticSupervisor, save_supervisor_report
 from minicode.feedback_controller import FeedbackController, SystemState
 from minicode.feedforward_controller import FeedforwardController, PreemptiveConfig
 from minicode.stability_monitor import StabilityMonitor, HealthLevel
@@ -39,6 +40,18 @@ from minicode.state_observer import StateObserver, MeasurementVector, ObservedSt
 from minicode.decoupling_controller import DecouplingController
 from minicode.predictive_controller import PredictiveController, PredictionHorizon
 from minicode.self_healing_engine import SelfHealingEngine, FaultType, FaultSeverity
+
+# 任务进度控制
+from minicode.progress_controller import ProgressController, ProgressSignal, ProgressAction
+
+# 记忆注入和模型选择控制
+from minicode.memory_injector import MemoryInjectionController, MemoryInjectionSignal, MemoryInjector
+from minicode.model_registry import ModelSelectionController, ModelSelectionSignal
+
+# 智能路由与自省 (Phase 3 导入)
+from minicode.smart_router import SmartRouter, TaskOutcome
+from minicode.agent_reflection import ReflectionEngine
+from minicode.model_switcher import ModelSwitcher
 
 # 上下文管理集成 (Claude Code-style + Engineering Cybernetics)
 from minicode.context_compactor import (
@@ -368,6 +381,7 @@ def run_agent_turn(
     feedback_controller: FeedbackController | None = None
     feedforward_controller: FeedforwardController | None = None
     stability_monitor: StabilityMonitor | None = None
+    cybernetic_supervisor: CyberneticSupervisor | None = None
 
     # 高级控制论模块
     adaptive_pid_tuner: AdaptivePIDTuner | None = None
@@ -375,6 +389,13 @@ def run_agent_turn(
     decoupling_controller: DecouplingController | None = None
     predictive_controller: PredictiveController | None = None
     self_healing_engine: SelfHealingEngine | None = None
+    progress_controller: ProgressController | None = None
+    memory_injection_ctrl: MemoryInjectionController | None = None
+    model_selection_ctrl: ModelSelectionController | None = None
+    smart_router: SmartRouter | None = None
+    reflection_engine: ReflectionEngine | None = None
+    model_switcher: ModelSwitcher | None = None
+    memory_injector: MemoryInjector | None = None
 
     if enable_work_chain:
         task, task_metadata = _build_work_chain_task(current_messages)
@@ -386,7 +407,32 @@ def run_agent_turn(
 
         # 初始化反馈控制器（负反馈 + 正反馈）
         feedback_controller = FeedbackController()
+        cybernetic_supervisor = CyberneticSupervisor()
         logger.info("Feedback controller initialized: negative + positive feedback loops")
+
+        # 智能路由：根据任务复杂度选择最优模型
+        if smart_router and task:
+            try:
+                current_model_id = model.model_id if hasattr(model, 'model_id') else ""
+                task_text = task.raw_input if hasattr(task, 'raw_input') else str(current_messages[-1].get('content', ''))
+                routing, switch_result = smart_router.route_and_switch(
+                    task_text,
+                    current_model=current_model_id,
+                )
+                logger.info(
+                    "SmartRouter: model=%s tier=%s cost=$%.4f reason=%s",
+                    routing.selected_model, routing.tier_name,
+                    routing.estimated_cost, routing.reasoning[:80],
+                )
+                # 如果路由推荐了不同模型且切换成功，更新 model 引用
+                if switch_result and switch_result.success:
+                    model = switch_result.adapter
+                    logger.info(
+                        "SmartRouter: switched model %s -> %s",
+                        switch_result.old_model, switch_result.new_model,
+                    )
+            except Exception:
+                pass
 
         # 初始化前馈控制器（预判式优化）
         if task:
@@ -397,6 +443,22 @@ def run_agent_turn(
                 "Feedforward control: config=%s risk=%s",
                 preemptive_config.recommended_model, risk_assessment.risk_level,
             )
+            # Apply feedforward preemptive config to execution parameters
+            if preemptive_config.confidence > 0.6:
+                max_steps = min(max_steps, preemptive_config.max_turn_steps)
+                logger.info(
+                    "Feedforward: max_steps=%d model=%s timeout=%.1fs",
+                    preemptive_config.max_turn_steps,
+                    preemptive_config.recommended_model,
+                    preemptive_config.tool_timeout_seconds,
+                )
+            if risk_assessment.risk_level in ("high", "critical"):
+                logger.warning(
+                    "Feedforward risk assessment: level=%s probability=%.2f risks=%s",
+                    risk_assessment.risk_level,
+                    risk_assessment.estimated_failure_probability,
+                    ", ".join(risk_assessment.identified_risks[:3]),
+                )
 
         # 初始化稳定性监测器（系统观测器）
         stability_monitor = StabilityMonitor(window_size=100)
@@ -410,6 +472,22 @@ def run_agent_turn(
         state_observer = StateObserver()
         logger.info("State observer initialized: Kalman filter-based estimation")
 
+        # 初始化进度控制器
+        progress_controller = ProgressController()
+
+        # 初始化记忆注入和模型选择控制器
+        memory_injection_ctrl = MemoryInjectionController()
+        model_selection_ctrl = ModelSelectionController()
+
+        # 初始化智能路由、自省和模型热切换 (Phase 3)
+        smart_router = SmartRouter()
+        reflection_engine = ReflectionEngine(memory_manager=None)
+        model_switcher = ModelSwitcher(
+            current_model=getattr(model, 'model_id', ''),
+            current_runtime=runtime or {},
+            current_tools=tools,
+        )
+
         # 初始化多变量解耦控制器
         decoupling_controller = DecouplingController()
         logger.info("Decoupling controller initialized: multi-variable control")
@@ -417,6 +495,26 @@ def run_agent_turn(
         # 初始化预测控制器
         predictive_controller = PredictiveController()
         logger.info("Predictive controller initialized: proactive control")
+
+        # 模型选择控制器：根据任务特征推荐模型
+        if model_selection_ctrl and task:
+            try:
+                model_signal = ModelSelectionSignal(
+                    task_complexity=getattr(task, 'complexity', 'moderate') if hasattr(task, 'complexity') else "moderate",
+                    budget_pressure=0.3,
+                    latency_pressure=0.3,
+                    recent_failures=0,
+                    current_model=model.model_id if hasattr(model, 'model_id') else "",
+                )
+                model_decision = model_selection_ctrl.decide(model_signal)
+                logger.info(
+                    "ModelSelectionController: model=%s score=%.2f effort=%s reasons=%s",
+                    model_decision.model, model_decision.score,
+                    model_decision.reasoning_effort.value,
+                    ", ".join(model_decision.reasons),
+                )
+            except Exception:
+                pass
 
         # 初始化上下文管理器 (Claude Code-style + Engineering Cybernetics)
         # 必须在 SelfHealingEngine 之前初始化，因为自愈引擎需要委托压缩操作
@@ -429,6 +527,67 @@ def run_agent_turn(
                 session_memory_enabled=True,
             )
             memory_mgr = MemoryManager(project_root=cwd)
+            # 将 memory_mgr 注入 ReflectionEngine，使自省经验持久化
+            if reflection_engine:
+                reflection_engine.memory = memory_mgr
+            # 初始化 MemoryInjector，将控制论决策落地为实际记忆注入
+            # 同时创建 Reranker（LLM 策展，提高检索精度 ~40% -> ~8% 噪音）
+            memory_reranker = None
+            try:
+                from minicode.memory_reranker import create_reranker
+                memory_reranker = create_reranker()
+            except Exception:
+                pass
+            memory_injector = MemoryInjector(
+                memory_manager=memory_mgr,
+                controller=memory_injection_ctrl,
+                reranker=memory_reranker,
+            )
+            # 记忆注入控制器：根据上下文压力决定注入策略
+            if memory_injection_ctrl:
+                try:
+                    inj_signal = MemoryInjectionSignal(
+                        context_usage=context_manager.get_stats().usage_percentage / 100.0,
+                        retrieval_quality=0.5,
+                        recent_failure=False,
+                    )
+                    inj_decision = memory_injection_ctrl.decide(
+                        inj_signal,
+                        base_max_memories=5,
+                        base_min_relevance=0.3,
+                        base_max_tokens=200,
+                    )
+                    logger.info(
+                        "MemoryInjectionController: mode=%s max_mem=%d min_rel=%.2f max_tok=%d",
+                        inj_decision.mode.value, inj_decision.max_memories,
+                        inj_decision.min_relevance, inj_decision.max_tokens_per_memory,
+                    )
+                except Exception:
+                    pass
+            # 执行实际记忆注入：将相关记忆注入到系统 prompt 中
+            if memory_injector and task:
+                try:
+                    task_desc = task.raw_input if hasattr(task, 'raw_input') else ""
+                    injected = memory_injector.inject_for_task(task_desc)
+                    if injected:
+                        logger.info(
+                            "MemoryInjector: injected %d memories (mode=%s)",
+                            len(injected),
+                            memory_injector._last_decision.mode.value if memory_injector._last_decision else "?",
+                        )
+                        # 将注入的记忆追加到系统 prompt
+                        memory_context = "\n## Injected Memory\n" + "\n".join(
+                            f"- {m.content[:200]}" for m in injected[:5]
+                        )
+                        for i, msg in enumerate(current_messages):
+                            if msg.get("role") == "system":
+                                current_messages[i] = {
+                                    **msg,
+                                    "content": msg["content"] + memory_context,
+                                }
+                                break
+                except Exception:
+                    pass
             context_compactor = ContextCompactor(
                 context_window=context_manager.context_window,
                 workspace=cwd,
@@ -449,7 +608,11 @@ def run_agent_turn(
             logger.info("ContextCybernetics initialized: PID control loop + predictive guard")
 
         # 初始化自愈引擎（接收 cybernetics 引用用于 CONTEXT_OVERFLOW 委托）
-        self_healing_engine = SelfHealingEngine(orchestrator=context_cybernetics)
+        self_healing_engine = SelfHealingEngine(
+            orchestrator=context_cybernetics,
+            tool_scheduler=tool_scheduler,
+            compactor=context_compactor,
+        )
         logger.info("Self-healing engine initialized: automated recovery + compaction delegation")
 
         # 初始化成本控制闭环 (CostTracker → PID → ToolResultBudgetManager)
@@ -469,15 +632,20 @@ def run_agent_turn(
 
         # 运行控制论闭环优化管线 (Sense → Predict → Control → Act → Learn)
         if context_cybernetics:
-            if cost_control and context_compactor:
+            if cost_control:
                 est_cost = stats.total_tokens * 0.000015
                 adj = cost_control.run(
                     cost_usd=est_cost,
                     total_tokens=stats.total_tokens,
                     total_calls=max(step, 1),
                 )
-                if context_compactor._tool_budget:
+                if context_compactor and hasattr(context_compactor, '_tool_budget') and context_compactor._tool_budget:
                     cost_control.apply_to_budget_manager(context_compactor._tool_budget)
+                elif adj and adj.budget_multiplier < 0.8:
+                    logger.warning(
+                        "CostControl: budget tightened (mult=%.2f reason=%s) but no compactor active",
+                        adj.budget_multiplier, adj.reason,
+                    )
 
             cyber_messages, cyber_result, cyber_action = context_cybernetics.run_cycle(
                 current_messages,
@@ -534,6 +702,25 @@ def run_agent_turn(
                     )
                     observed_state = state_observer.update(measurement)
 
+                    # 将 Kalman 估计值输入到控制器
+                    if observed_state.confidence > 0.4:
+                        if observed_state.internal_load > 0.8:
+                            logger.info(
+                                "StateObserver: high internal_load=%.2f, reduce concurrency",
+                                observed_state.internal_load,
+                            )
+                        if observed_state.hidden_errors > 0.5 and self_healing_engine:
+                            self_healing_engine.detect_and_heal({
+                                "error_rate": observed_state.hidden_errors * 5.0,
+                                "context_usage": observed_state.context_pressure,
+                            })
+                        if observed_state.system_degradation > 0.4:
+                            logger.warning(
+                                "StateObserver: system degradation=%.2f confidence=%.2f",
+                                observed_state.system_degradation,
+                                observed_state.confidence,
+                            )
+
                 # 预测控制：预测未来趋势并提前调整
                 if predictive_controller:
                     if context_manager:
@@ -544,7 +731,35 @@ def run_agent_turn(
                     if step > 2:
                         actions = predictive_controller.generate_predictive_actions()
                         if actions and actions[0].urgency > 0.7:
-                            logger.info("Predictive action triggered: %s", actions[0].recommended_action)
+                            action = actions[0]
+                            logger.info(
+                                "Predictive action: %s urgency=%.2f horizon=%s",
+                                action.recommended_action, action.urgency,
+                                getattr(action, 'horizon', 'unknown'),
+                            )
+                            # Execute predictive actions via dispatch
+                            dispatch: dict[str, Callable[[], None]] = {
+                                "trigger_compaction": lambda: (
+                                    context_cybernetics.try_reactive_recover(current_messages, "predictive")
+                                    if context_cybernetics else None
+                                ),
+                                "enable_safe_mode": lambda: logger.info(
+                                    "Predictive: safe_mode recommended (reduce concurrency, extend timeouts)"
+                                ),
+                                "reduce_concurrency": lambda: logger.info(
+                                    "Predictive: reduce_concurrency recommended"
+                                ),
+                            }
+                            handler = dispatch.get(action.recommended_action)
+                            if handler:
+                                try:
+                                    handler()
+                                except Exception as exc:
+                                    logger.warning(
+                                        "Predictive action %s failed: %s",
+                                        action.recommended_action, exc,
+                                    )
+                            # Also run self-healing for corroboration
                             if self_healing_engine:
                                 healing_actions = self_healing_engine.detect_and_heal({
                                     "context_usage": stats.usage_percentage / 100.0 if context_manager else 0.0,
@@ -615,6 +830,23 @@ def run_agent_turn(
                             recovery_result.tokens_freed,
                         )
                         continue
+
+                # ModelSwitcher: 尝试切换到备用模型并重试
+                if model_switcher and "rate" not in error_str:
+                    try:
+                        switch_result = model_switcher.switch_to(
+                            "",  # Let switcher pick fallback
+                            reason=f"{error_type}: {error_str[:80]}",
+                        )
+                        if switch_result.success and switch_result.adapter is not None:
+                            model = switch_result.adapter
+                            logger.info(
+                                "ModelSwitcher: switched to %s, retrying with new adapter",
+                                switch_result.new_model,
+                            )
+                            continue
+                    except Exception:
+                        pass
 
                 if on_assistant_message:
                     on_assistant_message(fallback)
@@ -766,7 +998,20 @@ def run_agent_turn(
 
                 # Phase 1: Run all concurrent-safe tools in parallel
                 if concurrent_calls:
-                    max_workers = tool_scheduler.get_recommended_max_workers(concurrent_calls)
+                    max_workers = tool_scheduler.get_recommended_max_workers(
+                        concurrent_calls,
+                        error_rate=tool_error_count / max(step, 1),
+                        avg_latency=step * 2.0,
+                        recent_failures=tool_error_count,
+                    )
+                    if tool_scheduler.last_decision:
+                        logger.info(
+                            "ToolSchedulerController: workers=%d multiplier=%.2f cooldown=%.2fs [%s]",
+                            max_workers,
+                            tool_scheduler.last_decision.concurrency_multiplier,
+                            tool_scheduler.last_decision.cooldown_seconds,
+                            ", ".join(tool_scheduler.last_decision.reasons or []),
+                        )
                     with concurrent.futures.ThreadPoolExecutor(
                         max_workers=max_workers,
                         thread_name_prefix="mc-tool",
@@ -924,11 +1169,33 @@ def run_agent_turn(
                     metrics_for_healing = {
                         "error_rate": tool_error_count / max(step, 1),
                         "context_usage": context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
-                        "oscillation_index": 0.0,  # 从反馈控制器获取
+                        "oscillation_index": feedback_controller._compute_oscillation() if feedback_controller else 0.0,
                     }
                     healing_actions = self_healing_engine.detect_and_heal(metrics_for_healing)
                     if healing_actions:
                         logger.info("Self-healing triggered: %s", healing_actions[0].strategy)
+
+                # 进度控制：检测任务是否卡住或完成
+                if progress_controller:
+                    progress_signal = ProgressSignal(
+                        total_steps=max_steps,
+                        completed_steps=step - tool_error_count,
+                        failed_steps=tool_error_count,
+                        tool_calls=step,
+                        tool_errors=tool_error_count,
+                        output_changed=saw_tool_result,
+                        elapsed_seconds=step * 2.0,
+                        max_steps=max_steps,
+                    )
+                    progress_decision = progress_controller.decide(progress_signal)
+                    if progress_decision.action in (ProgressAction.STOP, ProgressAction.REQUEST_CONFIRMATION):
+                        logger.warning(
+                            "ProgressController: action=%s health=%.2f stall=%.2f reasons=%s",
+                            progress_decision.action.value,
+                            progress_decision.health_score,
+                            progress_decision.stall_score,
+                            ", ".join(progress_decision.reasons),
+                        )
 
             # Tool execution completed for this step; ask the model for the next turn
             # instead of falling through to the max-step fallback.
@@ -971,6 +1238,42 @@ def run_agent_turn(
                 "Work chain completed: task=%s state=%s steps=%d errors=%d",
                 task.id, task.state.value, step, tool_error_count,
             )
+
+            # 任务后自省：提取经验教训
+            if reflection_engine and task:
+                try:
+                    execution_trace: list[dict[str, Any]] = [
+                        {"type": "tool_call", "count": step},
+                        {"type": "error", "count": tool_error_count, "content": f"{tool_error_count} errors"} if tool_error_count > 0 else {},
+                        {"type": "assistant", "steps": step},
+                    ]
+                    reflection = reflection_engine.reflect(
+                        task_description=task.raw_input if hasattr(task, 'raw_input') else str(task.id),
+                        execution_trace=execution_trace,
+                    )
+                    logger.info(
+                        "AgentReflection: success=%s confidence=%.2f lessons=%d improvements=%d",
+                        reflection.success, reflection.confidence,
+                        len(reflection.lessons_learned), len(reflection.suggested_improvements),
+                    )
+                except Exception:
+                    pass
+
+            # 路由反馈学习：记录任务结果以优化未来路由
+            if smart_router and task:
+                try:
+                    outcome = TaskOutcome(
+                        task_text=task.raw_input if hasattr(task, 'raw_input') else str(task.id),
+                        assigned_model=model.model_id if hasattr(model, 'model_id') else "unknown",
+                        success=(tool_error_count == 0),
+                        duration_ms=step * 2000.0,
+                        cost_usd=0.0,
+                        tool_errors=tool_error_count,
+                        model_switches=model_switcher.switch_count() if model_switcher else 0,
+                    )
+                    smart_router.learner().record_outcome(outcome)
+                except Exception:
+                    pass
 
         # 控制论反馈：记录模式有效性
         if enable_work_chain and feedback_controller and task:
@@ -1067,4 +1370,114 @@ def run_agent_turn(
                     system_state.stability_score(),
                     system_state.performance_score(),
                 )
+            # Apply outer-loop ControlSignal to runtime parameters
+            if control_signal.confidence > 0.6:
+                if control_signal.limit_max_steps:
+                    logger.info(
+                        "FeedbackController: limit_max_steps=%d (was %d)",
+                        control_signal.limit_max_steps, max_steps,
+                    )
+                if control_signal.adjust_token_budget != 1.0:
+                    if context_compactor and hasattr(context_compactor, '_tool_budget') and context_compactor._tool_budget:
+                        new_budget = max(
+                            1000,
+                            int(context_compactor._tool_budget.budget_per_message * control_signal.adjust_token_budget),
+                        )
+                        context_compactor._tool_budget.budget_per_message = new_budget
+                        logger.info(
+                            "FeedbackController: token budget adjusted to %d (mult=%.2f)",
+                            new_budget, control_signal.adjust_token_budget,
+                        )
+                if control_signal.reduce_parallelism:
+                    logger.info(
+                        "FeedbackController: reduce_parallelism=True "
+                        "(oscillation=%.2f stability=%.2f)",
+                        control_signal.oscillation_index,
+                        system_state.stability_score(),
+                    )
+                if control_signal.adjust_concurrency != 0:
+                    logger.info(
+                        "FeedbackController: adjust_concurrency=%+d "
+                        "(error_rate=%.2f avg_latency=%.2f)",
+                        control_signal.adjust_concurrency,
+                        system_state.error_frequency,
+                        system_state.avg_response_time,
+                    )
+                if control_signal.increase_model_level:
+                    logger.info(
+                        "FeedbackController: recommends model upgrade "
+                        "(error_rate=%.2f performance=%.2f)",
+                        system_state.error_frequency,
+                        system_state.performance_score(),
+                    )
+                if control_signal.decrease_model_level:
+                    logger.info(
+                        "FeedbackController: recommends model downgrade "
+                        "(cost optimization, token_efficiency=%.2f)",
+                        system_state.token_efficiency,
+                    )
+                if control_signal.suggest_memory_persistence:
+                    logger.info(
+                        "FeedbackController: suggests persisting working memory "
+                        "(skill_effectiveness=%.2f)",
+                        system_state.skill_effectiveness,
+                    )
+                if control_signal.recommend_skill_update:
+                    logger.info(
+                        "FeedbackController: recommends skill update "
+                        "(pattern_reuse=%.2f)",
+                        system_state.pattern_reuse_rate,
+                    )
+
+            # 自适应PID调参：每20轮自动调节内外环PID参数
+            if adaptive_pid_tuner and step > 0 and step % 20 == 0 and feedback_controller:
+                try:
+                    stability_error = 1.0 - system_state.stability_score()
+                    perf_score = system_state.performance_score()
+                    tuned = adaptive_pid_tuner.tune(
+                        stability_error, dt=1.0, performance_score=perf_score
+                    )
+                    if tuned and adaptive_pid_tuner._performance_history:
+                        recent_perf = adaptive_pid_tuner._performance_history[-5:]
+                        avg_perf = sum(recent_perf) / len(recent_perf)
+                        if context_cybernetics:
+                            cp = context_cybernetics.pid
+                            cp.kp = tuned.kp
+                            cp.ki = tuned.ki
+                            cp.kd = tuned.kd
+                            logger.info(
+                                "AdaptivePIDTuner: context PID tuned kp=%.3f ki=%.3f kd=%.3f "
+                                "method=%s perf=%.2f",
+                                tuned.kp, tuned.ki, tuned.kd,
+                                adaptive_pid_tuner._active_method.value if hasattr(adaptive_pid_tuner, '_active_method') else 'unknown',
+                                avg_perf,
+                            )
+                except Exception:
+                    pass  # 调参失败不能拖垮主循环
+
+        # 总监督层: 汇总局部控制器输出为统一风险视图
+        if cybernetic_supervisor:
+            supervisor_snapshots = []
+            if context_cybernetics:
+                supervisor_snapshots.append(
+                    cybernetic_supervisor.snapshot_from_context(context_cybernetics.get_stats())
+                )
+            if cost_control:
+                supervisor_snapshots.append(
+                    cybernetic_supervisor.snapshot_from_cost(cost_control.get_stats())
+                )
+            if tool_scheduler.last_decision:
+                supervisor_snapshots.append(
+                    cybernetic_supervisor.snapshot_from_tool_decision(
+                        tool_scheduler.last_decision.to_dict()
+                    )
+                )
+            supervisor_report = cybernetic_supervisor.report(supervisor_snapshots)
+            save_supervisor_report(supervisor_report)
+            logger.info(
+                "CyberneticSupervisor: health=%.2f risk=%s actions=%s",
+                supervisor_report.overall_health,
+                supervisor_report.risk_level.value,
+                "; ".join(supervisor_report.recommended_actions[:3]),
+            )
 

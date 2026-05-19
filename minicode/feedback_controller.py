@@ -86,6 +86,9 @@ class ControlSignal:
     recommend_skill_update: bool = False
     suggest_memory_persistence: bool = False
 
+    # Oscillation detection
+    oscillation_index: float = 0.0
+
     # Confidence in the signal
     confidence: float = 1.0
     reason: str = ""

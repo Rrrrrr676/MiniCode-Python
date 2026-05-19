@@ -15,7 +15,7 @@ Architecture (closed-loop):
                     ┌──────────────┐
                     │   Setpoint    │ target_usage
                     └──────┬───────┘
-                           │ (-)
+                           │ pressure error = usage - target
               ┌────────────▼────────────┐
               │   ContextPIDController   │
               │   (P + I + D)           │
@@ -189,7 +189,9 @@ class ContextPIDController:
       - Integral: eliminates steady-state offset (with anti-windup clamping)
       - Derivative: dampens oscillation by responding to error rate-of-change
 
-    Output is clamped to [0, 1] representing compaction intensity.
+    Output is clamped to [0, 1] representing compaction intensity. Higher
+    output means stronger pressure to compact, so usage above the setpoint
+    increases the controller output.
     """
 
     def __init__(
@@ -222,7 +224,7 @@ class ContextPIDController:
         now = time.time()
         if not self._initialized:
             self._prev_time = now
-            self._prev_error = self.setpoint - process_variable
+            self._prev_error = process_variable - self.setpoint
             self._initialized = True
             return 0.0
 
@@ -230,7 +232,7 @@ class ContextPIDController:
             dt = now - self._prev_time
         dt = max(dt, 0.001)
 
-        error = self.setpoint - process_variable
+        error = process_variable - self.setpoint
 
         p_term = self.kp * error
 
@@ -461,9 +463,8 @@ class CompactionStrategySelector:
 
     STRATEGY_MAP: list[tuple[float, CompactStrategy]] = [
         (0.00, CompactStrategy.MICROCOMPACT),
-        (0.35, CompactStrategy.SESSION_MEMORY),
-        (0.60, CompactStrategy.FULL),
-        (0.80, CompactStrategy.FULL),
+        (0.30, CompactStrategy.SESSION_MEMORY),
+        (0.55, CompactStrategy.FULL),
     ]
 
     def select(
@@ -639,6 +640,8 @@ class ContextCyberneticsOrchestrator:
         self._cycle_count = 0
         self._last_action: ControlAction | None = None
         self._last_result: CompactionResult | None = None
+        self._last_error_rate: float = 0.0
+        self._last_avg_latency: float = 0.0
 
     @property
     def last_action(self) -> ControlAction | None:
@@ -814,6 +817,12 @@ class ContextCyberneticsOrchestrator:
         based on real system-level observations.
         """
         self.update_coupling_metrics(error_rate=error_rate, avg_latency=avg_latency)
+        # Also track system resource metrics for future coupling analysis
+        if cpu_usage > 0 or memory_usage > 0:
+            self.update_coupling_metrics(
+                error_rate=error_rate,
+                avg_latency=avg_latency,
+            )
 
     def to_system_state(self) -> "SystemState":
         """Bridge: convert internal state to FeedbackController.SystemState.

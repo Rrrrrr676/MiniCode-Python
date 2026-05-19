@@ -279,6 +279,9 @@ class BudgetActuator:
         elif trend == SpendingTrend.ACCELERATING:
             threshold_mult *= 0.8
             budget_mult *= 0.85
+        elif trend == SpendingTrend.DECELERATING:
+            threshold_mult *= 1.05
+            budget_mult *= 1.05
 
         threshold_mult = max(0.25, min(3.0, threshold_mult))
         budget_mult = max(0.25, min(3.0, budget_mult))
