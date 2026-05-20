@@ -6,7 +6,6 @@ import sys
 import threading
 import time
 from typing import Any, Callable
-from minicode.tui.input_parser import KeyEvent, ParsedInputEvent, TextEvent, WheelEvent, parse_input_chunk
 from minicode.tui.state import ScreenState, TtyAppArgs
 from minicode.cli_commands import try_handle_local_command, find_matching_slash_commands
 from minicode.agent_loop import run_agent_turn
@@ -15,8 +14,6 @@ from minicode.history import save_history_entries
 from minicode.local_tool_shortcuts import parse_local_tool_shortcut
 from minicode.prompt import build_system_prompt
 from minicode.tooling import ToolContext
-from minicode.tui.navigation import _scroll_pending_approval_by, _toggle_pending_approval_expand, _move_pending_approval_selection, _scroll_transcript_by, _jump_transcript_to_edge, _history_up, _history_down, _get_visible_commands
-from minicode.tui.chrome import _cached_terminal_size
 from minicode.tui.tool_helpers import _summarize_tool_input, _is_file_edit_tool, _extract_path_from_tool_input, _summarize_collapsed_tool_body
 from minicode.tui.tool_lifecycle import _push_transcript_entry, _update_tool_entry, _update_transcript_entry, _append_to_transcript_entry, _collapse_tool_entry, _finalize_dangling_running_tools, _get_running_tool_entries, _schedule_tool_auto_collapse
 
@@ -213,7 +210,8 @@ class _RawModeContext:
                 except Exception:
                     pass
         elif self._old_settings is not None:
-            import termios, signal
+            import termios
+            import signal
 
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_settings)
             if getattr(self, '_old_sigwinch', None) is not None:
@@ -494,11 +492,10 @@ def _handle_input(
 
     def on_tool_result(tool_name: str, output: str, is_error: bool) -> None:
         # 计算并显示工具执行时间
-        elapsed = ""
         if state.tool_start_time is not None:
             elapsed_secs = time.monotonic() - state.tool_start_time
             if elapsed_secs > 1:
-                elapsed = f" ({elapsed_secs:.1f}s)"
+                pass
         
         pending = pending_tool_entries.get(tool_name, [])
         entry_id = pending.pop(0) if pending else None

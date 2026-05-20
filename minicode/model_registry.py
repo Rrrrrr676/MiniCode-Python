@@ -404,7 +404,7 @@ def build_provider_config(model: str, runtime: dict | None = None) -> ProviderCo
     """
     runtime = runtime or {}
     provider = detect_provider(model, runtime)
-    info = resolve_model_info(model, provider)
+    resolve_model_info(model, provider)
 
     if provider == Provider.OPENROUTER:
         return ProviderConfig(

@@ -229,7 +229,7 @@ def main() -> None:
     # Initialize UserProfileManager for user preferences
     from minicode.user_profile import UserProfileManager
     profile_manager = UserProfileManager(cwd=cwd)
-    merged_profile = profile_manager.load_merged()
+    profile_manager.load_merged()
     logger.info("User profile manager initialized (global=%s, project=%s)",
                 profile_manager.global_path.exists(),
                 profile_manager.project_path.exists())

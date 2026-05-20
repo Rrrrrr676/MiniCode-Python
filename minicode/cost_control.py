@@ -286,12 +286,12 @@ class BudgetActuator:
         threshold_mult = max(0.25, min(3.0, threshold_mult))
         budget_mult = max(0.25, min(3.0, budget_mult))
 
-        new_threshold = int(max(
+        int(max(
             self.MIN_PERSIST_THRESHOLD,
             min(self.MAX_PERSIST_THRESHOLD,
                 round(self.BASE_PERSIST_THRESHOLD * threshold_mult)),
         ))
-        new_budget = int(max(
+        int(max(
             self.MIN_BUDGET_PER_MESSAGE,
             min(self.MAX_BUDGET_PER_MESSAGE,
                 round(self.BASE_BUDGET_PER_MESSAGE * budget_mult)),

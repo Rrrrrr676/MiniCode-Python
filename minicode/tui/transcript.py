@@ -7,7 +7,6 @@ from .chrome import (
     _cached_terminal_size,
     RESET,
     DIM,
-    BOLD,
     ICON_DIVIDER,
     ICON_DOT,
 )

@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from .chrome import (
     RESET, DIM, BOLD, ITALIC, HIGHLIGHT_BG,
-    BRIGHT_GREEN, SUBTLE,
-    ICON_PROMPT, ICON_DOT,
+    BRIGHT_GREEN,
 )
 from .theme import theme
 

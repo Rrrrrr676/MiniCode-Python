@@ -31,7 +31,7 @@ from minicode.tui.types import TranscriptEntry
 from minicode.types import ChatMessage, ModelAdapter
 
 # ---------------------------------------------------------------------------
-from minicode.tui.state import TtyAppArgs, ScreenState
+from minicode.tui.state import ScreenState
 from minicode.tui.tool_helpers import _summarize_collapsed_tool_body, _summarize_tool_input, _apply_tool_result_visual_state as _shared_apply_tool_result_visual_state, _mark_unfinished_tools as _shared_mark_unfinished_tools, _save_transcript as _shared_save_transcript
 from minicode.tui.event_flow import _handle_event as _handle_tty_event
 from minicode.tui.runtime_control import _ThrottledRenderer, enter_tty_runtime, exit_tty_runtime, install_sigwinch_rerender
