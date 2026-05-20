@@ -158,15 +158,17 @@ class AnthropicModelAdapter:
     def next(self, messages: list[dict[str, Any]], on_stream_chunk: Callable[[str], None] | None = None, store: Store[AppState] | None = None) -> AgentStep:
         system_message, converted_messages = _to_anthropic_messages(messages)
 
-        # Inject stored thinking blocks into the last assistant message
+        # Replay stored thinking blocks into the first assistant message
+        # with text content (DeepSeek extended thinking round-trip)
         if self._thinking_blocks:
-            for i in range(len(converted_messages) - 1, -1, -1):
-                if converted_messages[i].get("role") == "assistant":
-                    existing = converted_messages[i].get("content", [])
-                    if isinstance(existing, list):
-                        converted_messages[i] = dict(converted_messages[i])
-                        converted_messages[i]["content"] = list(self._thinking_blocks) + existing
-                    break
+            for i in range(len(converted_messages)):
+                msg = converted_messages[i]
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", [])
+                    if isinstance(content, list):
+                        converted_messages[i] = dict(msg)
+                        converted_messages[i]["content"] = list(self._thinking_blocks) + content
+                        break
             self._thinking_blocks = []
 
         request_body = {
@@ -175,6 +177,10 @@ class AnthropicModelAdapter:
             "messages": converted_messages,
             "tools": self._get_serialized_tools(),
         }
+        # Disable extended thinking for non-Anthropic models that support it
+        # but require round-trip preservation our message format can't provide
+        if self.runtime.get("disableThinking"):
+            request_body["thinking"] = {"type": "disabled"}
         if self.runtime.get("maxOutputTokens") is not None:
             request_body["max_tokens"] = self.runtime["maxOutputTokens"]
         if on_stream_chunk:

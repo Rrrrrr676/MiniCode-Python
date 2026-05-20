@@ -571,6 +571,9 @@ def create_model_adapter(
         token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "") or os.environ.get("ANTHROPIC_API_KEY", "")
         if token:
             enriched["authToken"] = token
+    # Disable extended thinking for non-standard Anthropic endpoints (DeepSeek etc.)
+    if "api.anthropic.com" not in enriched.get("baseUrl", ""):
+        enriched["disableThinking"] = True
     return AnthropicModelAdapter(enriched, tools)
 
 
