@@ -23,7 +23,7 @@ from minicode.working_memory import protect_context
 # Work chain integration
 from minicode.intent_parser import parse_intent
 from minicode.task_object import build_task, TaskObject, TaskState
-from minicode.pipeline_engine import get_pipeline_engine, PipelineEngine
+from minicode.pipeline_engine import get_pipeline_engine
 from minicode.capability_registry import get_registry, CapabilityDomain
 from minicode.layered_context import ContextBuilder, LayeredContext
 from minicode.decision_audit import get_auditor, DecisionOutcome
@@ -67,36 +67,36 @@ logger = get_logger("agent_loop")
 # 甯搁噺锛氶伩鍏嶉噸澶嶇殑鎻愮ず鏂囨湰
 NUDGE_CONTINUE = (
     "Continue immediately from your <progress> update with concrete tool calls, "
-    "code changes, or an explicit <final> answer only if the task is complete."
+    "code changes, or an explicit <final> answer only if the task is complete. "
+    "Prefer taking the next concrete action over explaining what you plan to do."
 )
 
 NUDGE_AFTER_TOOL_RESULT = (
-    "Continue from your progress update. You have already used tools in this turn, "
-    "so treat plain status text as progress, not a final answer. Respond with the "
-    "next concrete tool call, code change, or an explicit <final> answer only if "
-    "the task is truly complete."
+    "You have received tool results. Review them briefly, then take the next "
+    "concrete action: call another tool, edit code, or give an explicit <final> "
+    "answer only if the task is truly complete. Do not restate what you just saw."
 )
 
 NUDGE_AFTER_EMPTY_RESPONSE = (
-    "Your last response was empty after recent tool results. Continue immediately "
-    "by trying the next concrete step, adapting to any tool errors, or giving an "
-    "explicit <final> answer only if the task is complete."
+    "Your last response was empty. This often happens after tool errors or when "
+    "the model is uncertain. Pick the most likely next action and try it — you can "
+    "adjust based on results. Call a tool, edit code, or give <final> if done."
 )
 
 NUDGE_AFTER_EMPTY_NO_TOOLS = (
-    "Your last response was empty. Continue immediately with concrete tool calls, "
-    "code changes, or an explicit <final> answer only if the task is complete."
+    "Your last response was empty but you have not used any tools yet. Start by "
+    "inspecting the relevant files (read_file, grep_files, list_files) to understand "
+    "the codebase before making changes."
 )
 
 RESUME_AFTER_PAUSE = (
-    "Resume from the previous pause and continue immediately with the next concrete "
-    "tool call, code change, or an explicit <final> answer only if the task is complete."
+    "Resume from the previous pause. Continue with the next concrete tool call, "
+    "code change, or <final> answer."
 )
 
 RESUME_AFTER_MAX_TOKENS = (
-    "Your previous response hit max_tokens during thinking before producing the next "
-    "actionable step. Resume immediately and continue with the next concrete tool call, "
-    "code change, or an explicit <final> answer only if the task is complete."
+    "Your previous response was cut short by the token limit. Resume immediately "
+    "with the next concrete action — pick up where you left off."
 )
 
 
@@ -389,7 +389,6 @@ def run_agent_turn(
     task_metadata: dict = {}
     layered_context: LayeredContext | None = None
     context_builder: ContextBuilder | None = None
-    pipeline_engine: PipelineEngine | None = None
     auditor = get_auditor() if enable_work_chain else None
 
     # 工程控制论控制器初始化
@@ -417,7 +416,7 @@ def run_agent_turn(
         layered_context, context_builder = _build_layered_context(
             current_messages, system_prompt, project_context, task,
         )
-        pipeline_engine = get_pipeline_engine()
+        get_pipeline_engine()
         _register_tool_capabilities(tools)
 
         # 初始化反馈控制器（负反馈 + 正反馈）
