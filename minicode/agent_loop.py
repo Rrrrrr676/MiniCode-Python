@@ -390,26 +390,25 @@ def run_agent_turn(
     context_builder: ContextBuilder | None = None
     auditor = get_auditor() if enable_work_chain else None
 
-    # 工程控制论控制器初始化
+    # 工程控制论控制器初始化（通过 Orchestrator 统一管理）
     orch: CyberneticOrchestrator | None = None
-    feedback_controller: FeedbackController | None = None
-    feedforward_controller: FeedforwardController | None = None
-    stability_monitor: StabilityMonitor | None = None
-    cybernetic_supervisor: CyberneticSupervisor | None = None
+    feedback_controller: Any = None
+    feedforward_controller: Any = None
+    stability_monitor: Any = None
+    cybernetic_supervisor: Any = None
 
-    # 高级控制论模块
-    adaptive_pid_tuner: AdaptivePIDTuner | None = None
-    state_observer: StateObserver | None = None
-    decoupling_controller: DecouplingController | None = None
-    predictive_controller: PredictiveController | None = None
-    self_healing_engine: SelfHealingEngine | None = None
-    progress_controller: ProgressController | None = None
-    memory_injection_ctrl: MemoryInjectionController | None = None
-    model_selection_ctrl: ModelSelectionController | None = None
-    smart_router: SmartRouter | None = None
-    reflection_engine: ReflectionEngine | None = None
-    model_switcher: ModelSwitcher | None = None
-    memory_injector: MemoryInjector | None = None
+    adaptive_pid_tuner: Any = None
+    state_observer: Any = None
+    decoupling_controller: Any = None
+    predictive_controller: Any = None
+    self_healing_engine: Any = None
+    progress_controller: Any = None
+    memory_injection_ctrl: Any = None
+    model_selection_ctrl: Any = None
+    smart_router: Any = None
+    reflection_engine: Any = None
+    model_switcher: Any = None
+    memory_injector: Any = None
 
     if enable_work_chain:
         task, task_metadata = _build_work_chain_task(current_messages)
