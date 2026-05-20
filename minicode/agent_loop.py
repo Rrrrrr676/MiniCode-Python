@@ -29,6 +29,7 @@ from minicode.layered_context import ContextBuilder, LayeredContext
 from minicode.decision_audit import get_auditor, DecisionOutcome
 
 # 工程控制论集成
+from minicode.cybernetic_orchestrator import CyberneticOrchestrator
 from minicode.cybernetic_supervisor import CyberneticSupervisor, save_supervisor_report
 from minicode.feedback_controller import FeedbackController
 from minicode.feedforward_controller import FeedforwardController
@@ -392,6 +393,7 @@ def run_agent_turn(
     auditor = get_auditor() if enable_work_chain else None
 
     # 工程控制论控制器初始化
+    orch: CyberneticOrchestrator | None = None
     feedback_controller: FeedbackController | None = None
     feedforward_controller: FeedforwardController | None = None
     stability_monitor: StabilityMonitor | None = None
