@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from minicode.tooling import ToolRegistry
@@ -121,3 +122,52 @@ def test_run_headless_provider_failure_uses_runtime_channel_details(
     assert "Active channel: anthropic-compatible via baseUrl/authToken." in response
     assert "Next step: Primary runtime is using a single anthropic-compatible channel from baseUrl/authToken." in response
 
+
+def test_run_headless_writes_messages_trace_when_requested(monkeypatch, tmp_path: Path) -> None:
+    import minicode.headless
+
+    runtime = {
+        "model": "deepseek-v4-pro[1m]",
+        "baseUrl": "https://openai-proxy.example/v1",
+        "authToken": "test-token",
+    }
+    trace_path = tmp_path / "artifacts" / "messages.json"
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MINI_CODE_HEADLESS_MESSAGES_OUT", str(trace_path))
+    monkeypatch.setattr(
+        "minicode.config.load_runtime_config",
+        lambda cwd: runtime,
+    )
+    monkeypatch.setattr(
+        "minicode.tools.create_default_tool_registry",
+        lambda cwd, runtime=None: ToolRegistry([]),
+    )
+    monkeypatch.setattr("minicode.permissions.PermissionManager", _DummyPermissions)
+    monkeypatch.setattr("minicode.memory.MemoryManager", _DummyMemoryManager)
+    monkeypatch.setattr(
+        "minicode.prompt.build_system_prompt",
+        lambda cwd, permissions, context: "sys",
+    )
+    monkeypatch.setattr(
+        "minicode.model_registry.create_model_adapter",
+        lambda model, tools, runtime=None: object(),
+    )
+    monkeypatch.setattr(
+        "minicode.agent_loop.run_agent_turn",
+        lambda **kwargs: [
+            {"role": "assistant", "content": "traceable"},
+            {"role": "tool", "content": "python -m unittest"},
+        ],
+    )
+
+    response = minicode.headless.run_headless("Run the visible tests.")
+
+    assert response == "traceable"
+    payload = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert payload["cwd"] == str(tmp_path)
+    assert payload["prompt"] == "Run the visible tests."
+    assert payload["model"] == "deepseek-v4-pro[1m]"
+    assert payload["assistant_response"] == "traceable"
+    assert payload["error"] is None
+    assert payload["messages"][0]["role"] == "assistant"
