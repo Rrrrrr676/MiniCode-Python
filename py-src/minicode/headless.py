@@ -16,9 +16,38 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
+
+
+def _write_headless_messages_trace(
+    trace_path: str | None,
+    *,
+    cwd: str,
+    prompt: str,
+    runtime: dict | None,
+    result_messages: list[dict] | None,
+    response_text: str | None,
+    error_text: str | None = None,
+) -> None:
+    if not trace_path:
+        return
+    payload = {
+        "cwd": cwd,
+        "prompt": prompt,
+        "model": (runtime or {}).get("model"),
+        "messages": result_messages or [],
+        "assistant_response": response_text,
+        "error": error_text,
+    }
+    path = Path(trace_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
 
 
 def run_headless(prompt: str | None = None) -> str:
@@ -103,6 +132,7 @@ def run_headless(prompt: str | None = None) -> str:
             max_steps = max(1, int(raw_max_steps))
         except ValueError:
             max_steps = 50
+    trace_output_path = os.environ.get("MINI_CODE_HEADLESS_MESSAGES_OUT", "").strip() or None
 
     try:
         result_messages = run_agent_turn(
@@ -112,6 +142,7 @@ def run_headless(prompt: str | None = None) -> str:
             cwd=cwd,
             permissions=permissions,
             max_steps=max_steps,
+            runtime=runtime,
         )
 
         # Extract last assistant message
@@ -119,11 +150,30 @@ def run_headless(prompt: str | None = None) -> str:
             (m for m in reversed(result_messages) if m["role"] == "assistant"),
             None,
         )
-        return last_assistant["content"] if last_assistant else "(no response)"
+        response_text = last_assistant["content"] if last_assistant else "(no response)"
+        _write_headless_messages_trace(
+            trace_output_path,
+            cwd=cwd,
+            prompt=prompt,
+            runtime=runtime,
+            result_messages=result_messages,
+            response_text=response_text,
+        )
+        return response_text
 
     except Exception as exc:  # noqa: BLE001
         logger.error("Headless error: %s", exc)
-        return f"Error: {exc}"
+        response_text = f"Error: {exc}"
+        _write_headless_messages_trace(
+            trace_output_path,
+            cwd=cwd,
+            prompt=prompt,
+            runtime=runtime,
+            result_messages=[],
+            response_text=response_text,
+            error_text=str(exc),
+        )
+        return response_text
     finally:
         try:
             tools.dispose()
