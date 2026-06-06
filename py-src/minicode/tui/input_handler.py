@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from collections import defaultdict
 import logging
 import os
@@ -10,17 +10,18 @@ from minicode.tui.input_parser import KeyEvent, ParsedInputEvent, TextEvent, Whe
 from minicode.tui.state import ScreenState, TtyAppArgs
 from minicode.cli_commands import try_handle_local_command, find_matching_slash_commands
 from minicode.agent_loop import run_agent_turn
-from minicode.context_manager import save_context_state
+import minicode.context_manager as context_manager_module
 from minicode.history import save_history_entries
 from minicode.local_tool_shortcuts import parse_local_tool_shortcut
 from minicode.prompt import build_system_prompt
 from minicode.tooling import ToolContext
 from minicode.tui.navigation import _scroll_pending_approval_by, _toggle_pending_approval_expand, _move_pending_approval_selection, _scroll_transcript_by, _jump_transcript_to_edge, _history_up, _history_down, _get_visible_commands
 from minicode.tui.chrome import _cached_terminal_size
-from minicode.tui.tool_helpers import _summarize_tool_input, _is_file_edit_tool, _extract_path_from_tool_input, _summarize_collapsed_tool_body
+from minicode.tui.tool_helpers import _record_recent_tool, _summarize_tool_input, _is_file_edit_tool, _extract_path_from_tool_input, _summarize_collapsed_tool_body
 from minicode.tui.tool_lifecycle import _push_transcript_entry, _update_tool_entry, _update_transcript_entry, _append_to_transcript_entry, _collapse_tool_entry, _finalize_dangling_running_tools, _get_running_tool_entries, _schedule_tool_auto_collapse
 
 logger = logging.getLogger("minicode.input_handler")
+save_context_state = getattr(context_manager_module, "save_context_state", None)
 
 # Cross-platform raw mode stdin
 # ---------------------------------------------------------------------------
@@ -52,6 +53,58 @@ _WIN_SCANCODE_TO_ANSI: dict[int, str] = {
     116: "\x1b[1;5C",  # Ctrl+Right
     115: "\x1b[1;5D",  # Ctrl+Left
 }
+
+
+def _record_tool_entry_start(
+    pending_tool_started_at: dict[int, float],
+    entry_id: int,
+    *,
+    started_at: float | None = None,
+) -> None:
+    """Record the start time for one concrete transcript tool entry."""
+
+    pending_tool_started_at[entry_id] = time.monotonic() if started_at is None else started_at
+
+
+def _consume_tool_entry_elapsed(
+    pending_tool_started_at: dict[int, float],
+    entry_id: int | None,
+    *,
+    finished_at: float | None = None,
+) -> str:
+    """Return a compact elapsed-time suffix for a completed tool entry."""
+
+    if entry_id is None:
+        return ""
+
+    started_at = pending_tool_started_at.pop(entry_id, None)
+    if started_at is None:
+        return ""
+
+    elapsed_secs = (time.monotonic() if finished_at is None else finished_at) - started_at
+    if elapsed_secs <= 1:
+        return ""
+    return f" ({elapsed_secs:.1f}s)"
+
+
+def _build_tool_display_output(output: str, is_error: bool) -> str:
+    """Build terminal-friendly tool result text with short recovery hints."""
+
+    if not is_error:
+        return output
+
+    suggestions: list[str] = []
+    output_lower = output.lower()
+    if "not found" in output_lower or "no such file" in output_lower:
+        suggestions.append("Hint: file not found. Try /ls to inspect available paths.")
+    elif "permission" in output_lower or "denied" in output_lower:
+        suggestions.append("Hint: permission denied. Check file access rights.")
+    elif "syntax" in output_lower or "error" in output_lower:
+        suggestions.append("Hint: the command failed. Review the output and fix the issue before retrying.")
+
+    if suggestions:
+        return f"ERROR: {output}\n\n" + "\n".join(suggestions)
+    return f"ERROR: {output}"
 
 
 def _win_read_one_key() -> str:
@@ -235,10 +288,7 @@ def _execute_tool_shortcut(
             tool_input,
             context=ToolContext(cwd=args.cwd, permissions=args.permissions),
         )
-        state.recent_tools.append({
-            "name": tool_name,
-            "status": "success" if result.ok else "error",
-        })
+        _record_recent_tool(state, tool_name, "success" if result.ok else "error")
         output = result.output if result.ok else f"ERROR: {result.output}"
         _update_tool_entry(state, entry_id, "success" if result.ok else "error", output)
         _collapse_tool_entry(state, entry_id, _summarize_collapsed_tool_body(output))
@@ -384,6 +434,7 @@ def _handle_input(
     rerender()
 
     pending_tool_entries: dict[str, list[int]] = defaultdict(list)
+    pending_tool_started_at: dict[int, float] = {}
     aggregated_edit_by_key: dict[str, AggregatedEditProgress] = {}
     aggregated_edit_by_entry_id: dict[int, AggregatedEditProgress] = {}
 
@@ -440,9 +491,33 @@ def _handle_input(
         state.transcript_scroll_offset = 0
         rerender()
 
+    def _refresh_tool_status() -> None:
+        running_tools = {
+            tool_name: len(entry_ids)
+            for tool_name, entry_ids in pending_tool_entries.items()
+            if entry_ids
+        }
+        total_running = sum(running_tools.values())
+        if total_running == 0:
+            state.status = None
+            state.active_tool = None
+            state.tool_start_time = None
+            return
+
+        if len(running_tools) == 1:
+            tool_name, count = next(iter(running_tools.items()))
+            if count == 1:
+                state.status = f"Running {tool_name}..."
+                state.active_tool = tool_name
+            else:
+                state.status = f"{count} {tool_name} task(s) running..."
+                state.active_tool = f"{count} {tool_name} task(s)"
+            return
+
+        state.status = f"{total_running} tool(s) running..."
+        state.active_tool = f"{total_running} tool(s)"
+
     def on_tool_start(tool_name: str, tool_input: Any) -> None:
-        state.status = f"Running {tool_name}..."
-        state.active_tool = tool_name
         state.tool_start_time = time.monotonic()  # 记录工具启动时间
 
         target_path = _extract_path_from_tool_input(tool_input)
@@ -490,19 +565,15 @@ def _handle_input(
             )
 
         pending_tool_entries[tool_name].append(entry_id)
+        _record_tool_entry_start(pending_tool_started_at, entry_id)
+        _refresh_tool_status()
         state.transcript_scroll_offset = 0
         rerender()
 
     def on_tool_result(tool_name: str, output: str, is_error: bool) -> None:
-        # 计算并显示工具执行时间
-        elapsed = ""
-        if state.tool_start_time is not None:
-            elapsed_secs = time.monotonic() - state.tool_start_time
-            if elapsed_secs > 1:
-                elapsed = f" ({elapsed_secs:.1f}s)"
-        
         pending = pending_tool_entries.get(tool_name, [])
         entry_id = pending.pop(0) if pending else None
+        elapsed = _consume_tool_entry_elapsed(pending_tool_started_at, entry_id)
         if entry_id is not None:
             aggregated = aggregated_edit_by_entry_id.get(entry_id)
             if aggregated and aggregated.tool_name == tool_name:
@@ -512,10 +583,12 @@ def _handle_input(
                 aggregated.last_output = output
                 done = aggregated.completed >= aggregated.total
                 if done:
-                    state.recent_tools.append({
-                        "name": f"{tool_name} x{aggregated.total}",
-                        "status": "error" if aggregated.errors > 0 else "success",
-                    })
+                    _record_recent_tool(
+                        state,
+                        tool_name,
+                        "error" if aggregated.errors > 0 else "success",
+                        display_name=f"{tool_name} x{aggregated.total}{elapsed}",
+                    )
                 body = (
                     "\n".join([
                         f"Aggregated {tool_name} for {aggregated.path}",
@@ -536,28 +609,15 @@ def _handle_input(
                     aggregated_edit_by_entry_id.pop(entry_id, None)
                     aggregated_edit_by_key.pop(f"{tool_name}:{aggregated.path}", None)
             else:
-                state.recent_tools.append({
-                    "name": tool_name,
-                    "status": "error" if is_error else "success",
-                })
+                _record_recent_tool(
+                    state,
+                    tool_name,
+                    "error" if is_error else "success",
+                    display_name=f"{tool_name}{elapsed}",
+                )
                 
                 # 错误恢复引导
-                display_output = output
-                if is_error:
-                    suggestions = []
-                    output_lower = output.lower()
-                    if "not found" in output_lower or "no such file" in output_lower:
-                        suggestions.append("💡 File not found. Try /ls to see available files")
-                    elif "permission" in output_lower or "denied" in output_lower:
-                        suggestions.append("💡 Permission denied. Check file access rights")
-                    elif "syntax" in output_lower or "error" in output_lower:
-                        suggestions.append("💡 Error occurred. Review the output and fix issues")
-                    
-                    if suggestions:
-                        display_output = f"ERROR: {output}\n\n" + "\n".join(suggestions)
-                    else:
-                        display_output = f"ERROR: {output}"
-                
+                display_output = _build_tool_display_output(output, is_error)
                 _update_tool_entry(
                     state,
                     entry_id,
@@ -571,12 +631,7 @@ def _handle_input(
                     rerender,
                 )
 
-        state.active_tool = None
-        remaining = sum(len(v) for v in pending_tool_entries.values())
-        if remaining > 0:
-            state.status = f"{remaining} tool(s) still running..."
-        else:
-            state.status = None
+        _refresh_tool_status()
         state.transcript_scroll_offset = 0
         rerender()
 
@@ -607,7 +662,8 @@ def _handle_input(
             )
             if args.context_manager is not None:
                 args.context_manager.messages = next_messages
-                save_context_state(args.context_manager)
+                if save_context_state is not None:
+                    save_context_state(args.context_manager)
             with agent_thread_lock:
                 agent_result["messages"] = next_messages
         except Exception as e:
@@ -634,3 +690,4 @@ def _handle_input(
 
 
 # ---------------------------------------------------------------------------
+

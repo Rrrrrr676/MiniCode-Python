@@ -22,6 +22,8 @@ class TtyAppArgs:
     permissions: PermissionManager
     memory_manager: Any | None = None
     context_manager: Any | None = None
+    prompt_bundle: Any | None = None
+    product_snapshot: dict[str, Any] | None = None
 
 
 @dataclass

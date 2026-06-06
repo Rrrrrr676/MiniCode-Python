@@ -563,8 +563,7 @@ def create_model_adapter(
     # Anthropic
     from minicode.anthropic_adapter import AnthropicModelAdapter
     enriched = dict(runtime or {})
-    if "model" not in enriched:
-        enriched["model"] = model
+    enriched["model"] = provider_config.model
     if "baseUrl" not in enriched:
         enriched["baseUrl"] = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
     if "authToken" not in enriched and "apiKey" not in enriched:

@@ -134,8 +134,11 @@ class CyberneticOrchestrator:
 
         self.smart_router = SmartRouter()
         self.reflection = ReflectionEngine(memory_manager=None)
+        current_model = str(getattr(model, "model_id", "") or "").strip()
+        if not current_model:
+            current_model = str((runtime or {}).get("model", "") or "").strip()
         self.model_switcher = ModelSwitcher(
-            current_model=getattr(model, 'model_id', ''),
+            current_model=current_model,
             current_runtime=runtime or {},
             current_tools=tools,
         )

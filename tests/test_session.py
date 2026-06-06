@@ -12,14 +12,22 @@ from minicode.session import (
     AutosaveManager,
     SessionData,
     SessionMetadata,
+    _runtime_summary_from_transcript_entries,
     cleanup_old_sessions,
+    create_file_checkpoint,
     create_new_session,
     delete_session,
+    format_checkpoint_summary_line,
+    format_session_inspect,
+    format_session_checkpoints,
     format_session_list,
+    format_session_replay,
     format_session_resume,
     get_latest_session,
     list_sessions,
     load_session,
+    rewind_session_data,
+    rewind_session,
     save_session,
 )
 
@@ -73,6 +81,36 @@ def test_save_and_load_session(temp_session_dir):
     assert len(loaded.messages) == 2
     assert len(loaded.transcript_entries) == 2
     assert loaded.workspace == "/tmp/test"
+
+
+def test_save_and_load_session_preserves_runtime_summary(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    session.transcript_entries = [
+        {
+            "id": 1,
+            "kind": "progress",
+            "category": "runtime",
+            "runtimeKind": "phase",
+            "runtimeStep": 1,
+            "runtimePhase": "explore",
+            "body": "Runtime phase: explore.",
+        },
+        {
+            "id": 2,
+            "kind": "progress",
+            "category": "runtime",
+            "runtimeKind": "stop",
+            "runtimeStep": 2,
+            "runtimeStopReason": "done",
+            "body": "Turn complete.",
+        },
+    ]
+
+    save_session(session)
+    loaded = load_session(session.session_id)
+
+    assert loaded is not None
+    assert loaded.metadata.runtime_summary == "phase:explore@1 -> stop:done@2"
 
 
 def test_load_nonexistent_session(temp_session_dir):
@@ -190,6 +228,22 @@ def test_format_session_list(temp_session_dir):
     assert session.session_id[:8] in result
 
 
+def test_format_session_list_includes_runtime_summary(temp_session_dir):
+    meta = SessionMetadata(
+        session_id="abc123456789",
+        created_at=1.0,
+        updated_at=2.0,
+        first_message="hello",
+        message_count=3,
+        workspace="/tmp/test",
+        runtime_summary="phase:verify@2 -> stop:done@3",
+    )
+
+    result = format_session_list([meta])
+
+    assert "Runtime: phase:verify@2 -> stop:done@3" in result
+
+
 def test_format_session_resume(temp_session_dir):
     """Test formatting session info for resume."""
     session = create_new_session(workspace="/tmp/test")
@@ -199,3 +253,627 @@ def test_format_session_resume(temp_session_dir):
     assert "Resuming session" in result
     assert session.session_id[:8] in result
     assert "/tmp/test" in result
+
+
+def test_format_session_resume_includes_runtime_summary(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    session.transcript_entries = [
+        {
+            "id": 1,
+            "kind": "progress",
+            "category": "runtime",
+            "runtimeKind": "phase",
+            "runtimeStep": 2,
+            "runtimePhase": "verify",
+            "body": "Runtime phase: verify.",
+        },
+        {
+            "id": 2,
+            "kind": "progress",
+            "category": "runtime",
+            "runtimeKind": "stop",
+            "runtimeStep": 3,
+            "runtimeStopReason": "done",
+            "body": "Turn complete.",
+        },
+    ]
+    session.update_metadata()
+
+    result = format_session_resume(session)
+
+    assert "Runtime: phase:verify@2 -> stop:done@3" in result
+
+
+def test_save_and_load_session_preserves_checkpoints(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    checkpoint = create_file_checkpoint(
+        session,
+        file_path="/tmp/test/demo.txt",
+        existed=True,
+        previous_content="before",
+    )
+
+    assert checkpoint is not None
+
+    loaded = load_session(session.session_id)
+    assert loaded is not None
+    assert loaded.metadata.checkpoint_count == 1
+    assert len(loaded.checkpoints) == 1
+    assert loaded.checkpoints[0].file_path == "/tmp/test/demo.txt"
+    assert loaded.checkpoints[0].previous_content == "before"
+
+
+def test_save_and_load_session_preserves_product_surfaces(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    session.instruction_layers = [
+        {
+            "name": "project-managed",
+            "scope": "project",
+            "kind": "managed",
+            "path": "/tmp/test/.mini-code/MANAGED.md",
+            "exists": True,
+            "preview": "Prefer strict verification.",
+        }
+    ]
+    session.hook_status = {
+        "total_hooks": 2,
+        "enabled_hooks": 1,
+        "total_calls": 3,
+        "total_duration_ms": 14,
+    }
+    session.delegated_tasks = [{"label": "lint-worker", "status": "running"}]
+    session.delegation_status = {
+        "running_tasks": 1,
+        "total_tracked": 1,
+        "max_slots": 4,
+        "available_slots": 3,
+        "active_labels": ["lint-worker"],
+    }
+    session.extension_manifests = [
+        {
+            "name": "git-helpers",
+            "scope": "project",
+            "enabled": True,
+            "version": "1.2.0",
+        }
+    ]
+    session.readiness_report = {
+        "status": "blocked",
+        "provider": "anthropic-compatible",
+        "provider_ready": False,
+        "provider_channel": "anthropic-compatible via baseUrl/authToken",
+        "fallback_guidance": [
+            "Primary runtime is using a single anthropic-compatible channel from baseUrl/authToken.",
+            "Add fallbackModels or anthropicFallbackModels to enable model failover.",
+        ],
+        "issues": ["Missing provider channel"],
+    }
+    session.update_metadata()
+
+    save_session(session)
+    loaded = load_session(session.session_id)
+
+    assert loaded is not None
+    assert loaded.instruction_layers[0]["kind"] == "managed"
+    assert loaded.hook_status["total_calls"] == 3
+    assert loaded.delegated_tasks[0]["label"] == "lint-worker"
+    assert loaded.extension_manifests[0]["name"] == "git-helpers"
+    assert loaded.readiness_report["provider"] == "anthropic-compatible"
+    assert "project-managed" in loaded.metadata.instruction_summary
+    assert "1 running" in loaded.metadata.delegation_summary
+
+
+def test_rewind_session_restores_latest_file_content(temp_session_dir, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "demo.txt"
+    target.write_text("before", encoding="utf-8")
+
+    session = create_new_session(workspace=str(workspace))
+    create_file_checkpoint(
+        session,
+        file_path=str(target),
+        existed=True,
+        previous_content="before",
+    )
+    target.write_text("after", encoding="utf-8")
+
+    rewound, restored = rewind_session(session.session_id)
+
+    assert rewound is not None
+    assert len(restored) == 1
+    assert target.read_text(encoding="utf-8") == "before"
+    assert rewound.metadata.checkpoint_count == 1
+    assert len(rewound.checkpoints) == 1
+    assert rewound.checkpoints[0].kind == "rewind"
+    assert rewound.checkpoints[0].previous_content == "after"
+
+
+def test_rewind_session_deletes_new_file_for_nonexistent_checkpoint(temp_session_dir, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "created.txt"
+
+    session = create_new_session(workspace=str(workspace))
+    create_file_checkpoint(
+        session,
+        file_path=str(target),
+        existed=False,
+        previous_content="",
+    )
+    target.write_text("new file", encoding="utf-8")
+
+    rewound, restored = rewind_session(session.session_id)
+
+    assert rewound is not None
+    assert len(restored) == 1
+    assert not target.exists()
+    assert rewound.metadata.checkpoint_count == 1
+    assert rewound.checkpoints[0].kind == "rewind"
+    assert rewound.checkpoints[0].previous_content == "new file"
+
+
+def test_rewind_session_supports_checkpoint_id(temp_session_dir, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "demo.txt"
+    target.write_text("v1", encoding="utf-8")
+
+    session = create_new_session(workspace=str(workspace))
+    first = create_file_checkpoint(
+        session,
+        file_path=str(target),
+        existed=True,
+        previous_content="v1",
+    )
+    target.write_text("v2", encoding="utf-8")
+    second = create_file_checkpoint(
+        session,
+        file_path=str(target),
+        existed=True,
+        previous_content="v2",
+    )
+    target.write_text("v3", encoding="utf-8")
+
+    rewound, restored = rewind_session(
+        session.session_id,
+        checkpoint_id=first.checkpoint_id if first else None,
+    )
+
+    assert second is not None
+    assert rewound is not None
+    assert [item.checkpoint_id for item in restored] == [
+        first.checkpoint_id,
+        second.checkpoint_id,
+    ]
+    assert target.read_text(encoding="utf-8") == "v1"
+    assert len(rewound.checkpoints) == 1
+    assert rewound.checkpoints[0].kind == "rewind"
+    assert rewound.checkpoints[0].previous_content == "v3"
+
+
+def test_rewind_session_data_restores_in_memory_session(temp_session_dir, tmp_path):
+    target = tmp_path / "demo.txt"
+    target.write_text("after", encoding="utf-8")
+    session = create_new_session(workspace=str(tmp_path))
+    create_file_checkpoint(
+        session,
+        file_path=str(target),
+        existed=True,
+        previous_content="before",
+    )
+
+    restored = rewind_session_data(session)
+
+    assert [item.file_path for item in restored] == [str(target)]
+    assert target.read_text(encoding="utf-8") == "before"
+    assert session.metadata.checkpoint_count == 1
+    assert len(session.checkpoints) == 1
+    assert session.checkpoints[0].kind == "rewind"
+    assert session.checkpoints[0].previous_content == "after"
+
+
+def test_rewind_session_data_allows_undoing_a_prior_rewind(temp_session_dir, tmp_path):
+    target = tmp_path / "demo.txt"
+    target.write_text("v1", encoding="utf-8")
+    session = create_new_session(workspace=str(tmp_path))
+    create_file_checkpoint(
+        session,
+        file_path=str(target),
+        existed=True,
+        previous_content="v1",
+    )
+    target.write_text("v2", encoding="utf-8")
+    create_file_checkpoint(
+        session,
+        file_path=str(target),
+        existed=True,
+        previous_content="v2",
+    )
+    target.write_text("v3", encoding="utf-8")
+
+    restored = rewind_session_data(session)
+
+    assert len(restored) == 1
+    assert target.read_text(encoding="utf-8") == "v2"
+    assert session.checkpoints[-1].kind == "rewind"
+
+    undo = rewind_session_data(session)
+
+    assert len(undo) == 1
+    assert undo[0].kind == "rewind"
+    assert target.read_text(encoding="utf-8") == "v3"
+    assert session.checkpoints[-1].kind == "rewind"
+    assert session.checkpoints[-1].previous_content == "v2"
+
+
+def test_rewind_session_data_undoes_latest_rewind_group_atomically(temp_session_dir, tmp_path):
+    alpha = tmp_path / "alpha.txt"
+    beta = tmp_path / "beta.txt"
+    alpha.write_text("a1", encoding="utf-8")
+    beta.write_text("b1", encoding="utf-8")
+    session = create_new_session(workspace=str(tmp_path))
+    create_file_checkpoint(
+        session,
+        file_path=str(alpha),
+        existed=True,
+        previous_content="a1",
+    )
+    alpha.write_text("a2", encoding="utf-8")
+    create_file_checkpoint(
+        session,
+        file_path=str(beta),
+        existed=True,
+        previous_content="b1",
+    )
+    beta.write_text("b2", encoding="utf-8")
+
+    restored = rewind_session_data(session, steps=2)
+
+    assert len(restored) == 2
+    assert alpha.read_text(encoding="utf-8") == "a1"
+    assert beta.read_text(encoding="utf-8") == "b1"
+    assert len(session.checkpoints) == 2
+    assert {checkpoint.kind for checkpoint in session.checkpoints} == {"rewind"}
+    group_ids = {checkpoint.group_id for checkpoint in session.checkpoints}
+    assert len(group_ids) == 1
+
+    undo = rewind_session_data(session)
+
+    assert len(undo) == 2
+    assert {item.kind for item in undo} == {"rewind"}
+    assert alpha.read_text(encoding="utf-8") == "a2"
+    assert beta.read_text(encoding="utf-8") == "b2"
+
+
+def test_format_session_list_includes_checkpoint_count(temp_session_dir):
+    meta = SessionMetadata(
+        session_id="abc123456789",
+        created_at=1.0,
+        updated_at=2.0,
+        first_message="hello",
+        message_count=3,
+        workspace="/tmp/test",
+        checkpoint_count=2,
+    )
+
+    result = format_session_list([meta])
+
+    assert "Checkpoints: 2" in result
+
+
+def test_format_session_resume_includes_checkpoint_count(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    create_file_checkpoint(
+        session,
+        file_path="/tmp/test/demo.txt",
+        existed=True,
+        previous_content="before",
+    )
+
+    result = format_session_resume(session)
+
+    assert "Checkpoints: 1" in result
+
+
+def test_format_session_resume_includes_recent_checkpoints(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    first = create_file_checkpoint(
+        session,
+        file_path="/tmp/test/alpha.txt",
+        existed=True,
+        previous_content="before",
+    )
+    second = create_file_checkpoint(
+        session,
+        file_path="/tmp/test/beta.txt",
+        existed=True,
+        previous_content="before",
+    )
+
+    result = format_session_resume(session)
+
+    assert first is not None
+    assert second is not None
+    assert "Recent checkpoints:" in result
+    assert f"[{second.checkpoint_id[:8]}] beta.txt" in result
+    assert f"[{first.checkpoint_id[:8]}] alpha.txt" in result
+
+
+def test_format_session_checkpoints_lists_latest_first(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    first = create_file_checkpoint(
+        session,
+        file_path="/tmp/test/first.txt",
+        existed=True,
+        previous_content="one",
+    )
+    second = create_file_checkpoint(
+        session,
+        file_path="/tmp/test/second.txt",
+        existed=False,
+        previous_content="",
+    )
+
+    result = format_session_checkpoints(session)
+
+    assert first is not None
+    assert second is not None
+    assert f"[{second.checkpoint_id[:8]}]" in result
+    assert f"[{first.checkpoint_id[:8]}]" in result
+    assert result.index(second.file_path) < result.index(first.file_path)
+    assert "Restores: new file" in result
+    assert "Type: edit" in result
+
+
+def test_format_checkpoint_summary_line_returns_latest_checkpoint_preview(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    first = create_file_checkpoint(
+        session,
+        file_path="/tmp/test/first.txt",
+        existed=True,
+        previous_content="one",
+    )
+    second = create_file_checkpoint(
+        session,
+        file_path="/tmp/test/second.txt",
+        existed=False,
+        previous_content="",
+    )
+
+    result = format_checkpoint_summary_line(session)
+
+    assert first is not None
+    assert second is not None
+    assert result.startswith("checkpoint-summary: 2 saved; latest ")
+    assert f"[{second.checkpoint_id[:8]}] second.txt" in result
+    assert f"[{first.checkpoint_id[:8]}] first.txt" in result
+
+
+def test_format_checkpoint_summary_line_marks_rewind_safety_entries(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    create_file_checkpoint(
+        session,
+        file_path="/tmp/test/first.txt",
+        existed=True,
+        previous_content="one",
+    )
+    session.checkpoints.append(
+        type(session.checkpoints[0])(
+            checkpoint_id="rewind123456",
+            created_at=2.0,
+            file_path="/tmp/test/second.txt",
+            existed=True,
+            previous_content="two",
+            kind="rewind",
+            group_id="group-1",
+        )
+    )
+    session.update_metadata()
+
+    result = format_checkpoint_summary_line(session)
+
+    assert "[rewind12] second.txt [rewind]" in result
+
+
+def test_format_session_inspect_includes_runtime_checkpoints_and_recent_transcript(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    session.history = ["look at logs"]
+    session.skills = ["runtime", "rewind"]
+    session.mcp_servers = ["memory"]
+    create_file_checkpoint(
+        session,
+        file_path="/tmp/test/demo.txt",
+        existed=True,
+        previous_content="before",
+    )
+    session.transcript_entries = [
+        {"id": 1, "kind": "assistant", "body": "Initial analysis complete."},
+        {
+            "id": 2,
+            "kind": "progress",
+            "category": "runtime",
+            "runtimeKind": "phase",
+            "runtimeStep": 4,
+            "runtimePhase": "verify",
+            "body": "Runtime phase: verify.",
+        },
+        {
+            "id": 3,
+            "kind": "tool",
+            "toolName": "edit_file",
+            "status": "success",
+            "body": "Patched minicode/session.py",
+        },
+    ]
+    session.update_metadata()
+
+    result = format_session_inspect(session)
+
+    assert f"Session inspect: {session.session_id[:8]}" in result
+    assert "Skills: runtime, rewind" in result
+    assert "MCP servers: memory" in result
+    assert "Checkpoints: 1" in result
+    assert "Runtime: phase:verify@4" in result
+    assert "Recent checkpoints: 1 saved; latest " in result
+    assert "Recent transcript (3 shown):" in result
+    assert "- [assistant] Initial analysis complete." in result
+    assert "- [runtime:phase] Runtime phase: verify." in result
+    assert "- [tool:edit_file/success] Patched minicode/session.py" in result
+
+
+def test_format_session_inspect_and_replay_include_product_surfaces(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    session.instruction_layers = [
+        {
+            "name": "project-managed",
+            "scope": "project",
+            "kind": "managed",
+            "path": "/tmp/test/.mini-code/MANAGED.md",
+            "exists": True,
+            "preview": "Prefer strict verification.",
+        }
+    ]
+    session.hook_status = {
+        "total_hooks": 2,
+        "enabled_hooks": 1,
+        "total_calls": 4,
+        "total_duration_ms": 11,
+        "failure_count": 1,
+        "last_status": "error",
+        "last_error": "pytest failed",
+    }
+    session.delegated_tasks = [{"label": "lint-worker", "status": "running"}]
+    session.delegation_status = {
+        "running_tasks": 1,
+        "total_tracked": 2,
+        "max_slots": 4,
+        "available_slots": 3,
+        "active_labels": ["lint-worker"],
+    }
+    session.extension_manifests = [
+        {
+            "name": "git-helpers",
+            "scope": "project",
+            "enabled": True,
+            "version": "1.2.0",
+            "description": "Extra git shortcuts",
+            "entrypoint": "extensions/git_helpers.py",
+        }
+    ]
+    session.readiness_report = {
+        "status": "blocked",
+        "provider": "anthropic-compatible",
+        "provider_ready": False,
+        "provider_channel": "anthropic-compatible via baseUrl/authToken",
+        "fallback_guidance": [
+            "Primary runtime is using a single anthropic-compatible channel from baseUrl/authToken.",
+            "Add fallbackModels or anthropicFallbackModels to enable model failover.",
+        ],
+        "issues": ["Missing provider channel"],
+    }
+    session.update_metadata()
+
+    inspect_text = format_session_inspect(session)
+    replay_text = format_session_replay(session)
+
+    assert "Instructions:" in inspect_text
+    assert "Hooks:" in inspect_text
+    assert "Delegation:" in inspect_text
+    assert "Extensions:" in inspect_text
+    assert "Readiness:" in inspect_text
+    assert "Instruction layers:" in inspect_text
+    assert "Hook surface:" in inspect_text
+    assert "Delegation surface:" in inspect_text
+    assert "Extensions:" in inspect_text
+    assert "Readiness:" in inspect_text
+    assert "project-managed" in inspect_text
+    assert "1/2 hook(s) enabled" in inspect_text
+    assert "lint-worker" in inspect_text
+    assert "git-helpers" in inspect_text
+    assert "channel: anthropic-compatible via baseUrl/authToken" in inspect_text
+    assert "guidance: Primary runtime is using a single anthropic-compatible channel" in inspect_text
+    assert "Missing provider channel" in inspect_text
+
+    assert "Readiness:" in replay_text
+    assert "Delegation:" in replay_text
+    assert "Instruction layers:" in replay_text
+    assert "Extensions:" in replay_text
+    assert "blocked via anthropic-compatible" in replay_text
+    assert "channel: anthropic-compatible via baseUrl/authToken" in replay_text
+    assert "guidance: Primary runtime is using a single anthropic-compatible channel" in replay_text
+    assert "project-managed" in replay_text
+    assert "git-helpers" in replay_text
+
+
+def test_format_session_replay_includes_checkpoints_history_and_timeline(temp_session_dir):
+    session = create_new_session(workspace="/tmp/test")
+    session.history = ["inspect logs", "rerun tests with strict verify"]
+    create_file_checkpoint(
+        session,
+        file_path="/tmp/test/demo.txt",
+        existed=True,
+        previous_content="before",
+    )
+    session.transcript_entries = [
+        {
+            "id": 1,
+            "kind": "progress",
+            "category": "runtime",
+            "runtimeKind": "phase",
+            "runtimeStep": 2,
+            "runtimePhase": "verify",
+            "body": "Runtime phase: verify.",
+        },
+        {
+            "id": 2,
+            "kind": "assistant",
+            "body": "Collected evidence and prepared final answer.",
+        },
+    ]
+    session.update_metadata()
+
+    result = format_session_replay(session)
+
+    assert f"Session replay: {session.session_id[:8]}" in result
+    assert "Runtime: phase:verify@2" in result
+    assert "Checkpoint trail (1 shown):" in result
+    assert "demo.txt (edit)" in result
+    assert "Prompt history (2 shown):" in result
+    assert "rerun tests with strict verify" in result
+    assert "Transcript timeline (2 shown):" in result
+    assert "- [runtime:phase] Runtime phase: verify." in result
+    assert "- [assistant] Collected evidence and prepared final answer." in result
+
+
+def test_runtime_summary_from_transcript_entries_deduplicates_runtime_tokens():
+    summary = _runtime_summary_from_transcript_entries(
+        [
+            {
+                "kind": "progress",
+                "category": "runtime",
+                "runtimeKind": "phase",
+                "runtimeStep": 1,
+                "runtimePhase": "explore",
+                "body": "Runtime phase: explore.",
+            },
+            {
+                "kind": "progress",
+                "category": "runtime",
+                "runtimeKind": "phase",
+                "runtimeStep": 1,
+                "runtimePhase": "explore",
+                "body": "Runtime phase: explore.",
+            },
+            {
+                "kind": "progress",
+                "category": "runtime",
+                "runtimeKind": "guard",
+                "runtimeStep": 4,
+                "runtimeVerificationFocus": "tool_evidence",
+                "body": "Verification guard is holding the turn open.",
+            },
+        ]
+    )
+
+    assert summary == "phase:explore@1 -> guard:tool_evidence@4"

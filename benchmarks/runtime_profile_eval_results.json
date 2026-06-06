@@ -1,0 +1,161 @@
+{
+  "rows": [
+    {
+      "scenario": "depth-budget-floor",
+      "condition": "single",
+      "runtime_profile": "single",
+      "wall_time_ms": 4.343099979450926,
+      "model_calls": 1,
+      "tool_starts": 0,
+      "tool_results": 0,
+      "progress_events": 2,
+      "runtime_events": 2,
+      "runtime_event_counts": {
+        "phase": 1,
+        "stop": 1
+      },
+      "runtime_trace": [
+        "phase:explore@1",
+        "stop:max_steps@1"
+      ],
+      "assistant_messages": 1,
+      "stop_reason": "max_steps",
+      "widened": false,
+      "verification_guard_triggered": false,
+      "completed": false,
+      "final_message": "Reached the maximum tool step limit for this turn."
+    },
+    {
+      "scenario": "depth-budget-floor",
+      "condition": "single-deep",
+      "runtime_profile": "single-deep",
+      "wall_time_ms": 1.3965999823994935,
+      "model_calls": 2,
+      "tool_starts": 0,
+      "tool_results": 0,
+      "progress_events": 2,
+      "runtime_events": 2,
+      "runtime_event_counts": {
+        "phase": 1,
+        "stop": 1
+      },
+      "runtime_trace": [
+        "phase:explore@1",
+        "stop:done@2"
+      ],
+      "assistant_messages": 1,
+      "stop_reason": "done",
+      "widened": false,
+      "verification_guard_triggered": false,
+      "completed": true,
+      "final_message": "done"
+    },
+    {
+      "scenario": "widening-escalation",
+      "condition": "single",
+      "runtime_profile": "single",
+      "wall_time_ms": 1.2136000150348991,
+      "model_calls": 1,
+      "tool_starts": 0,
+      "tool_results": 0,
+      "progress_events": 2,
+      "runtime_events": 2,
+      "runtime_event_counts": {
+        "phase": 1,
+        "stop": 1
+      },
+      "runtime_trace": [
+        "phase:explore@1",
+        "stop:max_steps@1"
+      ],
+      "assistant_messages": 1,
+      "stop_reason": "max_steps",
+      "widened": false,
+      "verification_guard_triggered": false,
+      "completed": false,
+      "final_message": "Reached the maximum tool step limit for this turn."
+    },
+    {
+      "scenario": "widening-escalation",
+      "condition": "single-deep",
+      "runtime_profile": "single-deep",
+      "wall_time_ms": 1.8911999941337854,
+      "model_calls": 10,
+      "tool_starts": 0,
+      "tool_results": 0,
+      "progress_events": 11,
+      "runtime_events": 7,
+      "runtime_event_counts": {
+        "phase": 5,
+        "widening": 1,
+        "stop": 1
+      },
+      "runtime_trace": [
+        "phase:explore@1",
+        "phase:execute@3",
+        "phase:verify@4",
+        "phase:verify@9",
+        "widen:the model stalled repeatedly before producing new evidence@9",
+        "phase:execute@10",
+        "stop:done@10"
+      ],
+      "assistant_messages": 1,
+      "stop_reason": "done",
+      "widened": true,
+      "verification_guard_triggered": false,
+      "completed": true,
+      "final_message": "done with a broader plan"
+    }
+  ],
+  "summary": {
+    "single": {
+      "runs": 2,
+      "completed_runs": 0,
+      "widened_runs": 0,
+      "verification_guard_runs": 0,
+      "total_model_calls": 2,
+      "total_tool_starts": 0,
+      "total_tool_results": 0,
+      "total_runtime_events": 4,
+      "total_wall_time_ms": 5.556699994485825,
+      "completion_rate": 0.0,
+      "widened_rate": 0.0,
+      "verification_guard_rate": 0.0,
+      "avg_model_calls": 1.0,
+      "avg_tool_starts": 0.0,
+      "avg_tool_results": 0.0,
+      "avg_runtime_events": 2.0,
+      "avg_wall_time_ms": 2.7783499972429127
+    },
+    "single-deep": {
+      "runs": 2,
+      "completed_runs": 2,
+      "widened_runs": 1,
+      "verification_guard_runs": 0,
+      "total_model_calls": 12,
+      "total_tool_starts": 0,
+      "total_tool_results": 0,
+      "total_runtime_events": 9,
+      "total_wall_time_ms": 3.287799976533279,
+      "completion_rate": 1.0,
+      "widened_rate": 0.5,
+      "verification_guard_rate": 0.0,
+      "avg_model_calls": 6.0,
+      "avg_tool_starts": 0.0,
+      "avg_tool_results": 0.0,
+      "avg_runtime_events": 4.5,
+      "avg_wall_time_ms": 1.6438999882666394
+    }
+  },
+  "provider_diagnostics": [
+    {
+      "label": "headless-smoke",
+      "outcome": "provider_outage",
+      "command": "C:\\Users\\question\\anaconda3\\python.exe -m minicode.headless Reply with exactly OK.",
+      "exit_code": 0,
+      "summary": "Provider availability failure: deepseek-v4-pro[1m] failed and all viable fallback models were unavailable. Remaining blocker is upstream provider/channel availability, not a local retry loop. Active channel: anthropic-compatible via baseUrl/authToken. Last error (RuntimeError): No available channel for model deepseek-v4-pro[1m] under group cc (distributor) (request id: 202606060346468033683028268d9d66QHAvNlc) Next step: Primary runtime is using a single anthropic-compatible channel from baseUrl/authToken.",
+      "stdout": "Provider availability failure: deepseek-v4-pro[1m] failed and all viable fallback models were unavailable. Remaining blocker is upstream provider/channel availability, not a local retry loop. Active channel: anthropic-compatible via baseUrl/authToken. Last error (RuntimeError): No available channel for model deepseek-v4-pro[1m] under group cc (distributor) (request id: 202606060346468033683028268d9d66QHAvNlc) Next step: Primary runtime is using a single anthropic-compatible channel from baseUrl/authToken.\n",
+      "stderr": "2026-06-06 11:46:39,514 [ERROR] minicode.agent_loop: Model API error (RuntimeError): No available channel for model deepseek-v4-pro[1m] under group cc (distributor) (request id: 202606060346468033683028268d9d66QHAvNlc)\n2026-06-06 11:46:39,514 [ERROR] minicode.model_switcher: Model fallback failed: Switch [FAILED]: deepseek-v4-pro[1m] (anthropic) ->  (unknown) Errors: No viable fallback models were available\n"
+    }
+  ]
+}

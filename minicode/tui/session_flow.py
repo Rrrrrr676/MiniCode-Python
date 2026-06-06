@@ -68,6 +68,8 @@ def build_tty_runtime_state(
     session: SessionData,
     memory_manager: Any | None = None,
     context_manager: Any | None = None,
+    prompt_bundle: Any | None = None,
+    product_snapshot: dict[str, Any] | None = None,
 ) -> tuple[TtyAppArgs, ScreenState]:
     args = TtyAppArgs(
         runtime=runtime,
@@ -78,6 +80,8 @@ def build_tty_runtime_state(
         permissions=permissions,
         memory_manager=memory_manager,
         context_manager=context_manager,
+        prompt_bundle=prompt_bundle,
+        product_snapshot=product_snapshot,
     )
 
     state = ScreenState(
@@ -129,7 +133,8 @@ def install_permission_prompt(
     return approval_event, approval_result, _permission_prompt_handler
 
 
-def finalize_tty_session(args: TtyAppArgs, state: ScreenState) -> None:
+def refresh_tty_session_snapshot(args: TtyAppArgs, state: ScreenState) -> None:
+    """Sync in-memory session data from the live TTY state without saving."""
     if not state.session:
         return
 
@@ -138,6 +143,12 @@ def finalize_tty_session(args: TtyAppArgs, state: ScreenState) -> None:
         {
             "id": e.id,
             "kind": e.kind,
+            "category": e.category,
+            "runtimeKind": e.runtimeKind,
+            "runtimeStep": e.runtimeStep,
+            "runtimePhase": e.runtimePhase,
+            "runtimeStopReason": e.runtimeStopReason,
+            "runtimeVerificationFocus": e.runtimeVerificationFocus,
             "toolName": e.toolName,
             "status": e.status,
             "body": e.body,
@@ -151,6 +162,33 @@ def finalize_tty_session(args: TtyAppArgs, state: ScreenState) -> None:
     state.session.permissions_summary = args.permissions.get_summary()
     state.session.skills = args.tools.get_skills()
     state.session.mcp_servers = args.tools.get_mcp_servers()
+    product_snapshot = getattr(args, "product_snapshot", None)
+    if product_snapshot:
+        state.session.instruction_layers = list(
+            product_snapshot.get("instruction_layers", [])
+        )
+        state.session.hook_status = dict(product_snapshot.get("hook_status", {}))
+        state.session.delegated_tasks = list(
+            product_snapshot.get("delegated_tasks", [])
+        )
+        state.session.delegation_status = dict(
+            product_snapshot.get("delegation_status", {})
+        )
+        state.session.extension_manifests = list(
+            product_snapshot.get("extension_manifests", [])
+        )
+        state.session.readiness_report = dict(
+            product_snapshot.get("readiness_report", {})
+        )
+    if hasattr(state.session, "update_metadata"):
+        state.session.update_metadata()
+
+
+def finalize_tty_session(args: TtyAppArgs, state: ScreenState) -> None:
+    if not state.session:
+        return
+
+    refresh_tty_session_snapshot(args, state)
 
     if state.autosave:
         state.autosave.force_save()

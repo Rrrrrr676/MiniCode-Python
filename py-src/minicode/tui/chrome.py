@@ -455,6 +455,24 @@ def render_status_line(status: str | None) -> str:
     return f"{t.assistant}{ICON_SUCCESS} Ready{t.reset}"
 
 
+def _truncate_tool_activity_label(label: str, max_width: int) -> str:
+    if max_width <= 0:
+        return ""
+    if string_display_width(label) <= max_width:
+        return label
+
+    if " path=" in label:
+        head, path = label.split(" path=", 1)
+        head = truncate_plain(head, max(6, min(max_width - 8, string_display_width(head))))
+        remaining = max(5, max_width - string_display_width(head) - 6)
+        return f"{head} path={truncate_path_middle(path, remaining)}"
+
+    if "\\" in label or "/" in label:
+        return truncate_path_middle(label, max_width)
+
+    return truncate_plain(label, max_width)
+
+
 def render_tool_panel(
     active_tool: str | None,
     recent_tools: list[dict[str, str]],
@@ -464,21 +482,57 @@ def render_tool_panel(
     t = theme()
     if background_tasks is None:
         background_tasks = []
+    width, _ = _cached_terminal_size()
+    label_width = max(16, min(32, (max(width, 40) - 18) // 3))
     parts: list[str] = []
     if active_tool:
-        parts.append(f"{ICON_RUNNING} {t.tool}{t.bold}running{t.reset} {active_tool}")
+        parts.append(
+            f"{ICON_RUNNING} {t.tool}{t.bold}running{t.reset} "
+            f"{_truncate_tool_activity_label(active_tool, label_width)}"
+        )
     for task in background_tasks:
         if task.get("status") == "running":
-            parts.append(f"{ICON_BG} {t.progress}bg{t.reset} {task.get('label', 'task')}")
+            label = _truncate_tool_activity_label(str(task.get("label", "task")), label_width)
+            parts.append(f"{ICON_BG} {t.progress}bg{t.reset} {label}")
     if not parts and not recent_tools:
         parts.append(f"{t.subtle}{ICON_DOT} idle{t.reset}")
     else:
         for tool in recent_tools[-3:]:
+            label = _truncate_tool_activity_label(str(tool.get("name", "tool")), label_width)
             if tool.get("status") == "success":
-                parts.append(f"{t.assistant}{ICON_SUCCESS} {tool.get('name', 'tool')}{t.reset}")
+                parts.append(f"{t.assistant}{ICON_SUCCESS} {label}{t.reset}")
             else:
-                parts.append(f"{t.tool_error}{ICON_ERROR} {tool.get('name', 'tool')}{t.reset}")
+                parts.append(f"{t.tool_error}{ICON_ERROR} {label}{t.reset}")
     return f"{ICON_TOOL} {t.dim}tools{t.reset}  " + f"  {t.subtle}{ICON_DOT}{t.reset}  ".join(parts)
+
+
+def _build_footer_right(
+    *,
+    tools_enabled: bool,
+    skills_enabled: bool,
+    background_tasks: list[dict[str, Any]],
+    compact: bool,
+) -> str:
+    t = theme()
+    bg_count = len(background_tasks)
+    tools_indicator = f"{t.assistant}{ICON_SUCCESS}{t.reset}" if tools_enabled else f"{t.tool_error}{ICON_ERROR}{t.reset}"
+    skills_indicator = f"{t.assistant}{ICON_SUCCESS}{t.reset}" if skills_enabled else f"{t.tool_error}{ICON_ERROR}{t.reset}"
+
+    if compact:
+        parts: list[str] = []
+        if bg_count:
+            parts.append(f"{ICON_BG} {t.progress}{bg_count}{t.reset}")
+        parts.append(f"{ICON_TOOL} {tools_indicator}")
+        parts.append(f"{ICON_SKILL} {skills_indicator}")
+        return " ".join(parts)
+
+    bg_info = ""
+    if bg_count:
+        bg_info = f" {ICON_BG} {t.progress}{bg_count} bg{t.reset} {t.subtle}|{t.reset}"
+    return (
+        f"{bg_info} {ICON_TOOL} {t.subtle}tools{t.reset} {tools_indicator}"
+        f" {t.subtle}|{t.reset} {ICON_SKILL} {t.subtle}skills{t.reset} {skills_indicator}"
+    )
 
 
 def render_footer_bar(
@@ -488,26 +542,32 @@ def render_footer_bar(
     background_tasks: list[dict[str, Any]] | None = None,
 ) -> str:
     """Single-line footer bar."""
-    t = theme()
     if background_tasks is None:
         background_tasks = []
     width, _ = _cached_terminal_size()
     left = render_status_line(status)
+    min_gap = 1
 
-    bg_info = ""
-    if background_tasks:
-        bg_info = f" {ICON_BG} {t.progress}{len(background_tasks)} bg{t.reset} {t.subtle}│{t.reset}"
-
-    tools_indicator = f"{t.assistant}{ICON_SUCCESS}{t.reset}" if tools_enabled else f"{t.tool_error}{ICON_ERROR}{t.reset}"
-    skills_indicator = f"{t.assistant}{ICON_SUCCESS}{t.reset}" if skills_enabled else f"{t.tool_error}{ICON_ERROR}{t.reset}"
-
-    right = (
-        f"{bg_info} {ICON_TOOL} {t.subtle}tools{t.reset} {tools_indicator}"
-        f" {t.subtle}│{t.reset} {ICON_SKILL} {t.subtle}skills{t.reset} {skills_indicator}"
+    right = _build_footer_right(
+        tools_enabled=tools_enabled,
+        skills_enabled=skills_enabled,
+        background_tasks=background_tasks,
+        compact=False,
     )
-    gap = max(1, width - string_display_width(left) - string_display_width(right))
-    return f"{left}{' ' * gap}{right}"
+    if string_display_width(left) + min_gap + string_display_width(right) > width:
+        right = _build_footer_right(
+            tools_enabled=tools_enabled,
+            skills_enabled=skills_enabled,
+            background_tasks=background_tasks,
+            compact=True,
+        )
 
+    available_left = max(10, width - string_display_width(right) - min_gap)
+    if string_display_width(left) > available_left:
+        left = truncate_plain(left, available_left)
+
+    gap = max(min_gap, width - string_display_width(left) - string_display_width(right))
+    return f"{left}{' ' * gap}{right}"
 
 def render_slash_menu(commands: list[Any], selected_index: int) -> str:
     """Render slash command menu with highlight."""

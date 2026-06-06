@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import concurrent.futures
 import inspect
@@ -27,6 +27,27 @@ from minicode.pipeline_engine import get_pipeline_engine, PipelineEngine
 from minicode.capability_registry import get_registry, CapabilityDomain
 from minicode.layered_context import ContextBuilder, LayeredContext, ContextLayer
 from minicode.decision_audit import get_auditor, DecisionType, DecisionOutcome
+from minicode.turn_kernel import (
+    AssistantMessageReplay,
+    AssistantTurnDecision,
+    ToolBatchPlan,
+    ToolReplayPlan,
+    ToolResultDecision,
+    ToolResultReplay,
+    ToolStepFeedback,
+    apply_tool_step_feedback,
+    build_tool_batch_plan,
+    build_tool_replay_plan,
+    build_tool_result_replay,
+    build_assistant_turn_replay,
+    build_step_content_replay,
+    build_tool_step_feedback,
+    build_turn_coda_summary,
+    finalize_work_chain_task,
+    TurnPreludeState,
+    TurnRecurrentState,
+    decide_assistant_turn,
+)
 
 # 工程控制论集成
 from minicode.feedback_controller import FeedbackController, SystemState
@@ -206,11 +227,11 @@ def _execute_single_tool(
     on_tool_start: Callable[[str, dict], None] | None,
     on_tool_result: Callable[[str, str, bool], None] | None,
 ) -> ToolResult:
-    """Execute a single tool call with hooks, state updates, and crash protection.
+    """Execute a single tool call with state updates, callbacks, and crash protection.
     
     Used both for serial execution and as a worker function for concurrent execution.
     When running concurrently (store/on_tool_start/on_tool_result are None),
-    hooks and UI callbacks are deferred to the result processing phase.
+    UI callbacks are deferred to the result processing phase.
     
     Includes a global exception safety net: any unexpected crash in the tool
     execution pipeline (hooks, state updates, etc.) is caught and converted
@@ -348,21 +369,13 @@ def run_agent_turn(
     enable_work_chain: bool = True,
 ) -> list[ChatMessage]:
     current_messages = list(messages)
-    saw_tool_result = False
-    empty_response_retry_count = 0
-    recoverable_thinking_retry_count = 0
-    tool_error_count = 0
-    step = 0
+    turn_state = TurnRecurrentState(max_steps=max_steps)
 
     tool_scheduler = ToolScheduler(metrics_collector=metrics_collector)
 
-    # Initialize work chain if enabled
-    task: TaskObject | None = None
-    task_metadata: dict = {}
-    layered_context: LayeredContext | None = None
-    context_builder: ContextBuilder | None = None
+    # Prelude: initialize once-per-turn work chain artifacts.
+    prelude = TurnPreludeState(auditor=get_auditor() if enable_work_chain else None)
     pipeline_engine: PipelineEngine | None = None
-    auditor = get_auditor() if enable_work_chain else None
 
     # 工程控制论控制器初始化
     feedback_controller: FeedbackController | None = None
@@ -377,9 +390,9 @@ def run_agent_turn(
     self_healing_engine: SelfHealingEngine | None = None
 
     if enable_work_chain:
-        task, task_metadata = _build_work_chain_task(current_messages)
-        layered_context, context_builder = _build_layered_context(
-            current_messages, system_prompt, project_context, task,
+        prelude.task, prelude.task_metadata = _build_work_chain_task(current_messages)
+        prelude.layered_context, prelude.context_builder = _build_layered_context(
+            current_messages, system_prompt, project_context, prelude.task,
         )
         pipeline_engine = get_pipeline_engine()
         _register_tool_capabilities(tools)
@@ -389,10 +402,14 @@ def run_agent_turn(
         logger.info("Feedback controller initialized: negative + positive feedback loops")
 
         # 初始化前馈控制器（预判式优化）
-        if task:
+        if prelude.task:
             feedforward_controller = FeedforwardController()
-            preemptive_config = feedforward_controller.preconfigure(task.parsed_intent, task.raw_input)
-            risk_assessment = feedforward_controller.assess_risks(task.parsed_intent, preemptive_config)
+            preemptive_config = feedforward_controller.preconfigure(
+                prelude.task.parsed_intent, prelude.task.raw_input
+            )
+            risk_assessment = feedforward_controller.assess_risks(
+                prelude.task.parsed_intent, preemptive_config
+            )
             logger.info(
                 "Feedforward control: config=%s risk=%s",
                 preemptive_config.recommended_model, risk_assessment.risk_level,
@@ -474,16 +491,20 @@ def run_agent_turn(
                 adj = cost_control.run(
                     cost_usd=est_cost,
                     total_tokens=stats.total_tokens,
-                    total_calls=max(step, 1),
+                    total_calls=max(turn_state.step, 1),
                 )
                 if context_compactor._tool_budget:
                     cost_control.apply_to_budget_manager(context_compactor._tool_budget)
 
             cyber_messages, cyber_result, cyber_action = context_cybernetics.run_cycle(
                 current_messages,
-                error_rate=float(tool_error_count) / max(step, 1) if step > 0 else 0.0,
-                avg_latency=step * 2.0,
-                turn_id=step,
+                error_rate=(
+                    float(turn_state.tool_error_count) / max(turn_state.step, 1)
+                    if turn_state.step > 0
+                    else 0.0
+                ),
+                avg_latency=turn_state.step * 2.0,
+                turn_id=turn_state.step,
             )
             if cyber_result and cyber_result.effective:
                 current_messages = cyber_messages
@@ -514,8 +535,8 @@ def run_agent_turn(
                 on_assistant_message(context_manager.get_context_summary())
 
     try:
-        while max_steps is None or step < max_steps:
-            step += 1
+        while turn_state.has_remaining_steps():
+            step = turn_state.begin_step()
 
             # Hook: agent turn started
             fire_hook_sync(HookEvent.AGENT_START, step=step, cwd=cwd)
@@ -527,9 +548,9 @@ def run_agent_turn(
                     measurement = MeasurementVector(
                         timestamp=time.time(),
                         response_time=step * 2.0,  # 估算响应时间
-                        success_rate=1.0 - (tool_error_count / max(step, 1)),
+                        success_rate=1.0 - (turn_state.tool_error_count / max(step, 1)),
                         context_length=context_manager.get_stats().total_tokens if context_manager else 0,
-                        error_count=tool_error_count,
+                        error_count=turn_state.tool_error_count,
                         tool_calls=0,
                     )
                     observed_state = state_observer.update(measurement)
@@ -539,7 +560,9 @@ def run_agent_turn(
                     if context_manager:
                         stats = context_manager.get_stats()
                         predictive_controller.update("context_usage", stats.usage_percentage / 100.0)
-                    predictive_controller.update("error_rate", tool_error_count / max(step, 1))
+                    predictive_controller.update(
+                        "error_rate", turn_state.tool_error_count / max(step, 1)
+                    )
 
                     if step > 2:
                         actions = predictive_controller.generate_predictive_actions()
@@ -548,7 +571,7 @@ def run_agent_turn(
                             if self_healing_engine:
                                 healing_actions = self_healing_engine.detect_and_heal({
                                     "context_usage": stats.usage_percentage / 100.0 if context_manager else 0.0,
-                                    "error_rate": tool_error_count / max(step, 1),
+                                    "error_rate": turn_state.tool_error_count / max(step, 1),
                                 })
                                 if healing_actions:
                                     logger.info("Self-healing: %s", healing_actions[0].strategy)
@@ -625,118 +648,74 @@ def run_agent_turn(
 
             if next_step.type == "assistant":
                 is_empty = _is_empty_assistant_response(next_step.content)
-                if not is_empty and _should_treat_assistant_as_progress(
-                    kind=getattr(next_step, 'kind', None),
-                    content=next_step.content,
-                    saw_tool_result=saw_tool_result,
-                ):
-                    if on_progress_message:
-                        on_progress_message(next_step.content)
-                    current_messages.append({"role": "assistant_progress", "content": next_step.content})
-                    current_messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                NUDGE_AFTER_TOOL_RESULT
-                                if saw_tool_result and getattr(next_step, 'kind', None) != "progress"
-                                else NUDGE_CONTINUE
-                            ),
-                        }
-                    )
-                    continue
-
                 diagnostics = next_step.diagnostics
-
-                if _is_recoverable_thinking_stop(
-                    is_empty=is_empty,
+                decision: AssistantTurnDecision = decide_assistant_turn(
+                    turn_state=turn_state,
+                    step_content=next_step.content,
+                    step_kind=getattr(next_step, "kind", None),
                     stop_reason=diagnostics.stopReason if diagnostics else None,
+                    block_types=diagnostics.blockTypes if diagnostics else None,
                     ignored_block_types=diagnostics.ignoredBlockTypes if diagnostics else None,
-                ) and recoverable_thinking_retry_count < 3:
-                    recoverable_thinking_retry_count += 1
-                    stop_reason = diagnostics.stopReason if diagnostics else None
-                    progress_content = (
-                        "Model hit max_tokens during thinking; requesting the next step."
-                        if stop_reason == "max_tokens"
-                        else "Model returned pause_turn; requesting the next step."
-                    )
-                    if on_progress_message:
-                        on_progress_message(progress_content)
-                    current_messages.append({"role": "assistant_progress", "content": progress_content})
-                    current_messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                RESUME_AFTER_PAUSE
-                                if stop_reason == "pause_turn"
-                                else RESUME_AFTER_MAX_TOKENS
-                            ),
-                        }
-                    )
-                    continue
-
-                if is_empty and empty_response_retry_count < 2:
-                    empty_response_retry_count += 1
-                    current_messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                NUDGE_AFTER_EMPTY_RESPONSE
-                                if saw_tool_result
-                                else NUDGE_AFTER_EMPTY_NO_TOOLS
-                            ),
-                        }
-                    )
-                    continue
-
-                if is_empty:
-                    diagnostics_suffix = _format_diagnostics(
-                        diagnostics.stopReason if diagnostics else None,
-                        diagnostics.blockTypes if diagnostics else None,
-                        diagnostics.ignoredBlockTypes if diagnostics else None,
-                    )
-                    if saw_tool_result:
-                        fallback = (
-                            f"Model returned an empty response after tool execution and the turn was stopped. There were {tool_error_count} tool error(s); retry, adjust the command, or choose a different approach.{diagnostics_suffix}"
-                            if tool_error_count > 0
-                            else f"Model returned an empty response after tool execution and the turn was stopped. Retry or ask the model to continue the remaining steps.{diagnostics_suffix}"
+                    is_empty=is_empty,
+                    treat_as_progress=(
+                        not is_empty
+                        and _should_treat_assistant_as_progress(
+                            kind=getattr(next_step, "kind", None),
+                            content=next_step.content,
+                            saw_tool_result=turn_state.saw_tool_result,
                         )
-                    else:
-                        fallback = f"Model returned an empty response and the turn was stopped.{diagnostics_suffix}"
-                    if on_assistant_message:
-                        on_assistant_message(fallback)
-                    current_messages.append({"role": "assistant", "content": fallback})
-                    return current_messages
-
-                if on_assistant_message:
-                    on_assistant_message(next_step.content)
-                current_messages.append({"role": "assistant", "content": next_step.content})
-                # Protect final answer in working memory
-                protect_context(
-                    content=next_step.content[:500],
-                    entry_type="key_decision",
-                    ttl_seconds=3600,
+                    ),
+                    is_recoverable_thinking_stop=_is_recoverable_thinking_stop(
+                        is_empty=is_empty,
+                        stop_reason=diagnostics.stopReason if diagnostics else None,
+                        ignored_block_types=diagnostics.ignoredBlockTypes if diagnostics else None,
+                    ),
+                    format_diagnostics=_format_diagnostics,
+                    nudge_continue=NUDGE_CONTINUE,
+                    nudge_after_tool_result=NUDGE_AFTER_TOOL_RESULT,
+                    resume_after_pause=RESUME_AFTER_PAUSE,
+                    resume_after_max_tokens=RESUME_AFTER_MAX_TOKENS,
+                    nudge_after_empty_response=NUDGE_AFTER_EMPTY_RESPONSE,
+                    nudge_after_empty_no_tools=NUDGE_AFTER_EMPTY_NO_TOOLS,
                 )
+
+                assistant_replay: AssistantMessageReplay = build_assistant_turn_replay(
+                    decision=decision
+                )
+                if assistant_replay.callback_kind == "progress" and on_progress_message and assistant_replay.callback_content:
+                    on_progress_message(assistant_replay.callback_content)
+                elif assistant_replay.callback_kind == "assistant" and on_assistant_message and assistant_replay.callback_content:
+                    on_assistant_message(assistant_replay.callback_content)
+
+                current_messages.extend(assistant_replay.transcript_messages)
+                if not assistant_replay.should_return:
+                    continue
+
+                # Protect final answer in working memory
+                if assistant_replay.protect_final_answer and assistant_replay.callback_content:
+                    protect_context(
+                        content=assistant_replay.callback_content[:500],
+                        entry_type="key_decision",
+                        ttl_seconds=3600,
+                    )
                 return current_messages
 
             if next_step.content:
-                role = "assistant_progress" if next_step.contentKind == "progress" else "assistant"
-                if role == "assistant_progress":
-                    if on_progress_message:
-                        on_progress_message(next_step.content)
-                    current_messages.append({"role": role, "content": next_step.content})
-                    current_messages.append(
-                        {
-                            "role": "user",
-                            "content": NUDGE_CONTINUE,
-                        }
-                    )
-                else:
-                    if on_assistant_message:
-                        on_assistant_message(next_step.content)
-                    current_messages.append({"role": role, "content": next_step.content})
-
-            if not next_step.calls and next_step.content and next_step.contentKind != "progress":
-                return current_messages
+                step_content_replay: AssistantMessageReplay = build_step_content_replay(
+                    content=next_step.content,
+                    content_kind=next_step.contentKind,
+                    has_calls=bool(next_step.calls),
+                    nudge_continue=NUDGE_CONTINUE,
+                )
+                if step_content_replay.callback_kind == "progress":
+                    if on_progress_message and step_content_replay.callback_content:
+                        on_progress_message(step_content_replay.callback_content)
+                elif step_content_replay.callback_kind == "assistant":
+                    if on_assistant_message and step_content_replay.callback_content:
+                        on_assistant_message(step_content_replay.callback_content)
+                current_messages.extend(step_content_replay.transcript_messages)
+                if step_content_replay.should_return:
+                    return current_messages
 
             # --- Concurrent tool execution ---
             # Classify calls into concurrent-safe (read-only) vs serial (writes/commands)
@@ -746,6 +725,12 @@ def run_agent_turn(
             if len(calls) <= 1:
                 # Single call — no benefit from concurrency, run directly
                 call = calls[0]
+                fire_hook_sync(
+                    HookEvent.PRE_TOOL_USE,
+                    tool_name=call["toolName"],
+                    tool_input=call["input"],
+                    step=step,
+                )
                 if metrics_collector:
                     metrics_collector.start_tool(call["toolName"])
                 result = _execute_single_tool(
@@ -761,14 +746,28 @@ def run_agent_turn(
             else:
                 # Multiple calls — use ToolScheduler for intelligent partitioning
                 concurrent_calls, serial_calls = tool_scheduler.schedule_calls(calls, tools)
+                batch_plan: ToolBatchPlan = build_tool_batch_plan(
+                    calls=calls,
+                    concurrent_calls=concurrent_calls,
+                    serial_calls=serial_calls,
+                    get_recommended_max_workers=tool_scheduler.get_recommended_max_workers,
+                )
 
                 _results: list[tuple[dict, ToolResult]] = []
 
                 # Phase 1: Run all concurrent-safe tools in parallel
-                if concurrent_calls:
-                    max_workers = tool_scheduler.get_recommended_max_workers(concurrent_calls)
+                if batch_plan.concurrent_calls:
+                    for call in batch_plan.concurrent_calls:
+                        if on_tool_start:
+                            on_tool_start(call["toolName"], call["input"])
+                        fire_hook_sync(
+                            HookEvent.PRE_TOOL_USE,
+                            tool_name=call["toolName"],
+                            tool_input=call["input"],
+                            step=step,
+                        )
                     with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=max_workers,
+                        max_workers=batch_plan.max_workers,
                         thread_name_prefix="mc-tool",
                     ) as pool:
                         future_to_call = {
@@ -777,7 +776,7 @@ def run_agent_turn(
                                 call, tools, cwd, permissions, runtime, None, step,
                                 None, None,  # No UI callbacks during concurrent phase
                             ): call
-                            for call in concurrent_calls
+                            for call in batch_plan.concurrent_calls
                         }
                         for future in concurrent.futures.as_completed(future_to_call):
                             call = future_to_call[future]
@@ -788,8 +787,14 @@ def run_agent_turn(
                             _results.append((call, result))
 
                 # Phase 2: Run serial tools sequentially (in original order)
-                if serial_calls:
-                    for call in serial_calls:
+                if batch_plan.serial_calls:
+                    for call in batch_plan.serial_calls:
+                        fire_hook_sync(
+                            HookEvent.PRE_TOOL_USE,
+                            tool_name=call["toolName"],
+                            tool_input=call["input"],
+                            step=step,
+                        )
                         if metrics_collector:
                             metrics_collector.start_tool(call["toolName"])
                         result = _execute_single_tool(
@@ -807,31 +812,18 @@ def run_agent_turn(
                             # Still need to process remaining results for messages
                             break
             
-            # Process all results and build messages (preserve original call order)
-            call_order = {call["id"]: idx for idx, call in enumerate(calls)}
-            _results.sort(key=lambda pair: call_order.get(pair[0]["id"], 999))
-            
-            for call, result in _results:
+            replay_plan: ToolReplayPlan = build_tool_replay_plan(
+                calls=calls,
+                all_results=_results,
+                is_concurrency_safe=lambda tool_name: bool(
+                    (tool_def := tools.find(tool_name)) and tool_def.is_concurrency_safe
+                ),
+            )
+
+            await_user_assistant_content: str | None = None
+            for call, result in replay_plan.ordered_results:
                 # Fire hooks and UI callbacks for concurrent calls (deferred)
                 tool_def = tools.find(call["toolName"])
-                is_concurrent = tool_def and tool_def.is_concurrency_safe and len(calls) > 1
-                
-                if is_concurrent:
-                    # Deferred UI callbacks for concurrent tools
-                    if on_tool_start:
-                        on_tool_start(call["toolName"], call["input"])
-                    if store:
-                        store.set_state(set_busy(call["toolName"]))
-                        store.set_state(increment_tool_calls())
-                        store.set_state(set_idle())
-                    # Hook: pre-tool-use (fire after the fact for concurrent tools)
-                    fire_hook_sync(
-                        HookEvent.PRE_TOOL_USE,
-                        tool_name=call["toolName"],
-                        tool_input=call["input"],
-                        step=step,
-                    )
-                
                 # Hook: post-tool-use
                 fire_hook_sync(
                     HookEvent.POST_TOOL_USE,
@@ -840,95 +832,93 @@ def run_agent_turn(
                     is_error=not result.ok,
                     step=step,
                 )
-                
-                if is_concurrent:
+
+                tool_replay: ToolResultReplay = build_tool_result_replay(
+                    call=call,
+                    result=result,
+                    turn_state=turn_state,
+                    total_call_count=len(calls),
+                    is_concurrency_safe=bool(tool_def and tool_def.is_concurrency_safe),
+                    all_results=_results,
+                    dedup_manager=(
+                        context_compactor.read_dedup
+                        if context_compactor
+                        else None
+                    ),
+                    message_index=len(current_messages),
+                    classify_error=lambda output, tool_name: ErrorClassifier.classify(
+                        output,
+                        tool_name=tool_name,
+                    ),
+                    generate_nudge=lambda classified, retry_count: NudgeGenerator.generate(
+                        classified,
+                        retry_count=retry_count,
+                    ),
+                    log_dedup=lambda file_path: logger.debug(
+                        "ReadDedup replaced content for %s (stub)",
+                        file_path,
+                    ),
+                )
+
+                if tool_replay.should_emit_callback:
                     if on_tool_result:
-                        on_tool_result(call["toolName"], result.output, not result.ok)
-                
-                saw_tool_result = True
-                if not result.ok:
-                    tool_error_count += 1
-                    # Use ErrorClassifier for intelligent error handling
-                    classified = ErrorClassifier.classify(result.output, tool_name=call["toolName"])
-                    nudge = NudgeGenerator.generate(classified, retry_count=tool_error_count)
-                    # Append nudge to tool result content for model context
-                    result_output = result.output + "\n\n[System note: " + nudge + "]"
-                else:
-                    result_output = result.output
+                        on_tool_result(
+                            call["toolName"],
+                            tool_replay.callback_output,
+                            not result.ok,
+                        )
+                    if store and tool_replay.should_increment_tool_calls:
+                        store.set_state(increment_tool_calls())
 
                 # Record conflicts between concurrent tools if both failed
-                if not result.ok and len(calls) > 1:
-                    for other_call, other_result in _results:
-                        if other_call["id"] == call["id"]:
-                            continue
-                        if not other_result.ok:
-                            tool_scheduler.record_conflict(call["toolName"], other_call["toolName"])
+                for conflicting_tool_name in tool_replay.conflicting_tool_names:
+                    tool_scheduler.record_conflict(
+                        call["toolName"],
+                        conflicting_tool_name,
+                    )
 
                 # ReadDedup: 去重相同文件的重复读取，节省上下文空间
-                if (
-                    context_compactor
-                    and result.ok
-                    and call.get("toolName") == "read_file"
-                ):
-                    file_path = call.get("input", {}).get("path", "")
-                    if file_path:
-                        dedup_mgr = context_compactor.read_dedup
-                        if dedup_mgr.should_dedup(file_path, result_output):
-                            result_output = dedup_mgr.get_stub(file_path)
-                            logger.debug("ReadDedup replaced content for %s (stub)", file_path)
-                        dedup_mgr.register_read(file_path, result_output, len(current_messages))
+                tool_decision: ToolResultDecision = tool_replay.tool_decision
+                current_messages.extend(tool_decision.transcript_messages)
+                if tool_decision.should_return and await_user_assistant_content is None:
+                    await_user_assistant_content = tool_decision.assistant_content
 
+            if await_user_assistant_content is not None:
+                if on_assistant_message:
+                    on_assistant_message(await_user_assistant_content)
                 current_messages.append(
-                    {
-                        "role": "assistant_tool_call",
-                        "toolUseId": call["id"],
-                        "toolName": call["toolName"],
-                        "input": call["input"],
-                    }
+                    {"role": "assistant", "content": await_user_assistant_content}
                 )
-                current_messages.append(
-                    {
-                        "role": "tool_result",
-                        "toolUseId": call["id"],
-                        "toolName": call["toolName"],
-                        "content": result_output,
-                        "isError": not result.ok,
-                    }
-                )
-                if result.awaitUser:
-                    if on_assistant_message:
-                        on_assistant_message(result_output)
-                    current_messages.append({"role": "assistant", "content": result_output})
-                    if metrics_collector:
-                        metrics_collector.end_turn(total_tokens=0)
-                    return current_messages
+                if metrics_collector:
+                    metrics_collector.end_turn(total_tokens=0)
+                return current_messages
 
             # 工具执行完成后的控制论反馈
             if enable_work_chain:
                 # 多变量解耦：消除工具间的耦合影响
-                if decoupling_controller:
-                    decoupling_controller.record_measurement({
-                        "token_usage_to_latency": (
-                            context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
-                            step * 2.0 / 60.0,
-                        ),
-                        "context_pressure_to_errors": (
-                            context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
-                            tool_error_count / max(step, 1),
-                        ),
-                    })
-                    decoupling_controller.compute_decoupling_matrix()
+                step_feedback: ToolStepFeedback = build_tool_step_feedback(
+                    turn_state=turn_state,
+                    context_usage=(
+                        context_manager.get_stats().usage_percentage / 100.0
+                        if context_manager
+                        else 0.0
+                    ),
+                    oscillation_index=(
+                        feedback_controller._compute_oscillation()
+                        if feedback_controller
+                        else 0.0
+                    ),
+                )
 
                 # 自愈检测：检测并修复故障
-                if self_healing_engine:
-                    metrics_for_healing = {
-                        "error_rate": tool_error_count / max(step, 1),
-                        "context_usage": context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
-                        "oscillation_index": feedback_controller._compute_oscillation() if feedback_controller else 0.0,
-                    }
-                    healing_actions = self_healing_engine.detect_and_heal(metrics_for_healing)
-                    if healing_actions:
-                        logger.info("Self-healing triggered: %s", healing_actions[0].strategy)
+                apply_tool_step_feedback(
+                    feedback=step_feedback,
+                    decoupling_controller=decoupling_controller,
+                    self_healing_engine=self_healing_engine,
+                    log_healing=lambda strategy: logger.info(
+                        "Self-healing triggered: %s", strategy
+                    ),
+                )
 
             # Tool execution completed for this step; ask the model for the next turn
             # instead of falling through to the max-step fallback.
@@ -945,7 +935,23 @@ def run_agent_turn(
         current_messages.append({"role": "assistant", "content": fallback})
         return current_messages
     finally:
-        fire_hook_sync(HookEvent.AGENT_STOP, step=step, tool_errors=tool_error_count)
+        # Coda: finalize metrics, work-chain bookkeeping, and control summaries.
+        fire_hook_sync(
+            HookEvent.AGENT_STOP,
+            step=turn_state.step,
+            tool_errors=turn_state.tool_error_count,
+        )
+        task = prelude.task
+        task_metadata = prelude.task_metadata
+        auditor = prelude.auditor
+        coda_summary = build_turn_coda_summary(
+            turn_state=turn_state,
+            context_usage=(
+                context_manager.get_stats().usage_percentage
+                if context_manager
+                else 0.0
+            ),
+        )
 
         if metrics_collector and metrics_collector._current_turn is not None:
             total_tokens = sum(
@@ -954,29 +960,27 @@ def run_agent_turn(
             metrics_collector.end_turn(total_tokens=total_tokens)
 
         if enable_work_chain and task:
-            final_state = TaskState.COMPLETED if tool_error_count == 0 else TaskState.FAILED
-            task.set_state(final_state)
-            task.result_summary = f"Turn completed: {step} steps, {tool_error_count} errors"
-
-            if auditor:
-                outcome = DecisionOutcome.SUCCESS if tool_error_count == 0 else DecisionOutcome.FAILURE
-                auditor.complete_decision(
-                    outcome,
-                    step * 100.0,
-                    task.result_summary,
-                    task.error_message if tool_error_count > 0 else "",
-                )
+            finalize_work_chain_task(
+                task=task,
+                auditor=auditor,
+                coda_summary=coda_summary,
+                success_outcome=DecisionOutcome.SUCCESS,
+                failure_outcome=DecisionOutcome.FAILURE,
+            )
 
             logger.info(
                 "Work chain completed: task=%s state=%s steps=%d errors=%d",
-                task.id, task.state.value, step, tool_error_count,
+                task.id,
+                task.state.value,
+                coda_summary.step,
+                coda_summary.tool_error_count,
             )
 
         # 控制论反馈：记录模式有效性
         if enable_work_chain and feedback_controller and task:
             pattern_id = f"{task_metadata.get('intent_type', 'unknown')}_{task.id}"
             feedback_controller.record_pattern_effectiveness(
-                pattern_id, tool_error_count == 0
+                pattern_id, coda_summary.success
             )
 
         # 稳定性监测：记录快照
@@ -984,9 +988,9 @@ def run_agent_turn(
             from minicode.stability_monitor import MetricSnapshot
             snapshot = MetricSnapshot(
                 timestamp=time.time(),
-                error_rate=float(tool_error_count) / max(step, 1),
-                avg_latency=step * 2.0,  # 简化估算
-                context_usage=context_manager.get_stats().usage_percentage if context_manager else 0.0,
+                error_rate=coda_summary.error_rate,
+                avg_latency=coda_summary.avg_latency,  # 简化估算
+                context_usage=coda_summary.context_usage,
                 active_tasks=1,
             )
             stability_monitor.record_snapshot(snapshot)
@@ -1067,4 +1071,5 @@ def run_agent_turn(
                     system_state.stability_score(),
                     system_state.performance_score(),
                 )
+
 

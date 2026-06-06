@@ -2,15 +2,24 @@ from __future__ import annotations
 
 import concurrent.futures
 import inspect
+import re
 import time
 from typing import Any, Callable
 
+from minicode.config import describe_fallback_guidance, describe_provider_channel
 from minicode.context_manager import ContextManager, estimate_message_tokens
 from minicode.logging_config import get_logger
+from minicode.model_registry import detect_provider
 from minicode.permissions import PermissionManager
 from minicode.state import Store, AppState, increment_tool_calls, set_busy, set_idle
 from minicode.tooling import ToolContext, ToolRegistry, ToolResult
-from minicode.types import AgentStep, ChatMessage, ModelAdapter
+from minicode.types import (
+    AgentStep,
+    ChatMessage,
+    ModelAdapter,
+    RuntimeEvent,
+    RuntimeEventCategory,
+)
 
 # Hooks integration
 from minicode.hooks import HookEvent, fire_hook_sync
@@ -18,15 +27,17 @@ from minicode.hooks import HookEvent, fire_hook_sync
 # Intelligence integration
 from minicode.agent_metrics import AgentMetricsCollector
 from minicode.agent_intelligence import ErrorClassifier, NudgeGenerator, ToolScheduler
-from minicode.working_memory import protect_context
+from minicode.working_memory import get_working_memory, protect_context
 
 # Work chain integration
 from minicode.intent_parser import parse_intent
 from minicode.task_object import build_task, TaskObject, TaskState
+from minicode.task_graph import TaskGraph, TaskState as GraphTaskState
 from minicode.pipeline_engine import get_pipeline_engine
 from minicode.capability_registry import get_registry, CapabilityDomain
 from minicode.layered_context import ContextBuilder, LayeredContext
 from minicode.decision_audit import get_auditor, DecisionOutcome
+from minicode.runtime_profiles import resolve_runtime_profile
 
 # 工程控制论集成
 from minicode.cybernetic_orchestrator import CyberneticOrchestrator
@@ -60,6 +71,19 @@ from minicode.context_compactor import (
 from minicode.context_cybernetics import ContextCyberneticsOrchestrator
 from minicode.cost_control import CostControlLoop
 from minicode.memory import MemoryManager
+from minicode.turn_kernel import (
+    TurnPreludeState,
+    TurnRecurrentState,
+    TurnVerificationState,
+    build_stable_task_pack,
+    build_turn_coda_summary,
+    build_widening_transition_nudge,
+    decide_tool_turn,
+    decide_assistant_turn,
+    derive_turn_step_policy,
+    finalize_work_chain_task,
+    render_turn_policy_message,
+)
 
 logger = get_logger("agent_loop")
 
@@ -97,6 +121,140 @@ RESUME_AFTER_MAX_TOKENS = (
     "Your previous response was cut short by the token limit. Resume immediately "
     "with the next concrete action — pick up where you left off."
 )
+
+
+STABLE_TASK_STATE_MARKER = "[Stable task state]"
+_MODEL_FALLBACK_ERROR_HINTS = (
+    "no available channel",
+    "temporarily unavailable",
+    "service unavailable",
+    "please try again later",
+    "capacity exceeded",
+    "overloaded",
+    "high demand",
+    "503",
+    "502",
+    "500",
+    "connection refused",
+    "connection reset",
+    "timed out",
+    "timeout",
+)
+_MODEL_FALLBACK_BLOCK_HINTS = (
+    "unauthorized",
+    "forbidden",
+    "invalid api key",
+    "authentication",
+    "bad request",
+    "invalid_request",
+    "validation",
+    "tool schema",
+    "context length",
+)
+
+
+def _upsert_stable_task_state_message(
+    messages: list[ChatMessage],
+    stable_text: str,
+) -> list[ChatMessage]:
+    filtered = [
+        message
+        for message in messages
+        if not (
+            message.get("role") == "system"
+            and str(message.get("content", "")).startswith(STABLE_TASK_STATE_MARKER)
+        )
+    ]
+    filtered.append(
+        {
+            "role": "system",
+            "content": f"{STABLE_TASK_STATE_MARKER}\n{stable_text}",
+        }
+    )
+    return filtered
+
+
+def _should_attempt_model_fallback(error_message: str) -> bool:
+    normalized = error_message.lower()
+    if any(marker in normalized for marker in _MODEL_FALLBACK_BLOCK_HINTS):
+        return False
+    return any(marker in normalized for marker in _MODEL_FALLBACK_ERROR_HINTS)
+
+
+def _looks_like_provider_availability_error(error_message: str) -> bool:
+    normalized = error_message.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "no available channel",
+            "temporarily unavailable",
+            "service unavailable",
+            "please try again later",
+            "capacity exceeded",
+            "overloaded",
+            "high demand",
+            "503",
+            "502",
+            "500",
+        )
+    )
+
+
+def _summarize_model_api_failure(
+    *,
+    error_type: str,
+    error: Exception,
+    active_model_id: str = "",
+    fallback_errors: list[str] | None = None,
+    runtime: dict[str, Any] | None = None,
+) -> str:
+    fallback_errors = fallback_errors or []
+    if fallback_errors:
+        combined = " ".join(fallback_errors)
+        if (
+            "no viable fallback models were available" in combined.lower()
+            and any(_looks_like_provider_availability_error(item) for item in fallback_errors + [str(error)])
+        ):
+            model_label = active_model_id or "the active model"
+            runtime = runtime or {}
+            provider = detect_provider(model_label, runtime).value if model_label else "unknown"
+            channel = describe_provider_channel(runtime, provider)
+            guidance = describe_fallback_guidance(
+                runtime,
+                provider_name=provider,
+                current_model=model_label or str(runtime.get("model", "")).strip(),
+            )
+            guidance_suffix = f" Next step: {guidance[0]}" if guidance else ""
+            return (
+                f"Provider availability failure: {model_label} failed and all viable fallback models were unavailable. "
+                f"Remaining blocker is upstream provider/channel availability, not a local retry loop. "
+                f"Active channel: {channel}. Last error ({error_type}): {error}{guidance_suffix}"
+            )
+    return f"Model API error ({error_type}): {error}"
+
+
+def _extract_model_id_from_provider_error(error: Exception) -> str:
+    message = str(error)
+    match = re.search(r"model\s+([^\s]+)\s+under\s+group", message, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def _infer_active_model_id(
+    model: ModelAdapter,
+    runtime: dict[str, Any] | None,
+    error: Exception | None = None,
+) -> str:
+    explicit = str(getattr(model, "model_id", "") or "").strip()
+    if explicit:
+        return explicit
+    runtime_model = str((runtime or {}).get("model", "") or "").strip()
+    if runtime_model:
+        return runtime_model
+    if error is not None:
+        return _extract_model_id_from_provider_error(error)
+    return ""
 
 
 def _is_empty_assistant_response(content: str) -> bool:
@@ -210,6 +368,7 @@ def _execute_single_tool(
     tools: ToolRegistry,
     cwd: str,
     permissions: Any | None,
+    session: Any | None,
     runtime: dict | None,
     store: Any | None,
     step: int,
@@ -252,7 +411,7 @@ def _execute_single_tool(
                 future = pool.submit(
                     tools.execute,
                     tool_name, tool_input,
-                    ToolContext(cwd=cwd, permissions=permissions, _runtime=runtime),
+                    ToolContext(cwd=cwd, permissions=permissions, session=session, _runtime=runtime),
                 )
                 result = future.result(timeout=TOOL_TIMEOUT)
         except concurrent.futures.TimeoutError:
@@ -263,7 +422,7 @@ def _execute_single_tool(
         except Exception:
             result = tools.execute(
                 tool_name, tool_input,
-                ToolContext(cwd=cwd, permissions=permissions, _runtime=runtime),
+                ToolContext(cwd=cwd, permissions=permissions, session=session, _runtime=runtime),
             )  # Fallback: direct execution
         
         # Post-tool state updates (only for serial execution)
@@ -507,12 +666,14 @@ def run_agent_turn(
     messages: list[ChatMessage],
     cwd: str,
     permissions: PermissionManager | None = None,
+    session: Any | None = None,
     store: Store[AppState] | None = None,
     max_steps: int = 50,
     on_tool_start: Callable[[str, dict], None] | None = None,
     on_tool_result: Callable[[str, str, bool], None] | None = None,
     on_assistant_message: Callable[[str], None] | None = None,
     on_progress_message: Callable[[str], None] | None = None,
+    on_runtime_event: Callable[[RuntimeEvent], None] | None = None,
     on_assistant_stream_chunk: Callable[[str], None] | None = None,
     on_thinking_chunk: Callable[[str], None] | None = None,
     context_manager: ContextManager | None = None,
@@ -522,21 +683,53 @@ def run_agent_turn(
     project_context: str = "",
     enable_work_chain: bool = True,
 ) -> list[ChatMessage]:
+    # Prelude: prepare per-turn state before we enter the recurrent think/act loop.
     current_messages = list(messages)
-    saw_tool_result = False
-    empty_response_retry_count = 0
-    recoverable_thinking_retry_count = 0
-    tool_error_count = 0
-    step = 0
+    runtime_profile = resolve_runtime_profile(runtime, fallback_max_steps=max_steps)
+    turn_state = TurnRecurrentState(
+        max_steps=runtime_profile.max_steps,
+        profile_name=runtime_profile.name,
+        widen_after_step=runtime_profile.widen_after_step,
+        empty_response_retry_limit=runtime_profile.empty_response_retry_limit,
+        recoverable_thinking_retry_limit=runtime_profile.recoverable_thinking_retry_limit,
+        verification_state=TurnVerificationState(
+            strict=runtime_profile.strict_step_verification,
+            requires_explicit_final=runtime_profile.strict_step_verification,
+        ),
+    )
+    max_steps = runtime_profile.max_steps
+
+    def emit_runtime_event(
+        *,
+        category: RuntimeEventCategory,
+        message: str,
+        emit_progress: bool = True,
+        stop_reason: str = "",
+        widening_reason: str = "",
+        evidence_summary: str = "",
+    ) -> None:
+        policy = turn_state.step_policy
+        event = RuntimeEvent(
+            category=category,
+            message=message,
+            step=turn_state.step or None,
+            profile=runtime_profile.name,
+            phase=policy.phase if policy is not None else "",
+            verification_focus=(
+                policy.verification_focus if policy is not None else ""
+            ),
+            stop_reason=stop_reason,
+            widening_reason=widening_reason,
+            evidence_summary=evidence_summary,
+        )
+        if on_runtime_event:
+            on_runtime_event(event)
+        if emit_progress and on_progress_message:
+            on_progress_message(message)
 
     tool_scheduler = ToolScheduler(metrics_collector=metrics_collector)
 
-    # Initialize work chain if enabled
-    task: TaskObject | None = None
-    task_metadata: dict = {}
-    layered_context: LayeredContext | None = None
-    context_builder: ContextBuilder | None = None
-    auditor = get_auditor() if enable_work_chain else None
+    prelude = TurnPreludeState(auditor=get_auditor() if enable_work_chain else None)
 
     # 工程控制论控制器初始化（通过 Orchestrator 统一管理）
     orch: CyberneticOrchestrator | None = None
@@ -559,9 +752,19 @@ def run_agent_turn(
     memory_injector: Any = None
 
     if enable_work_chain:
-        task, task_metadata = _build_work_chain_task(current_messages)
-        layered_context, context_builder = _build_layered_context(
-            current_messages, system_prompt, project_context, task,
+        prelude.task, prelude.task_metadata = _build_work_chain_task(current_messages)
+        if prelude.task:
+            prelude.task_graph = TaskGraph(name=f"turn-{prelude.task.id}")
+            graph_task = prelude.task_graph.add_task(
+                name=prelude.task.title or prelude.task.id,
+                description=prelude.task.goal or prelude.task.description,
+            )
+            prelude.task_graph_id = graph_task.id
+            slot = prelude.task_graph.assign_slot(graph_task.id, slot_name="turn")
+            prelude.task_slot_key = f"{slot.slot_name}:{slot.task_id}"
+            prelude.task_graph.start_task(prelude.task_slot_key)
+        prelude.layered_context, prelude.context_builder = _build_layered_context(
+            current_messages, system_prompt, project_context, prelude.task,
         )
         get_pipeline_engine()
         _register_tool_capabilities(tools)
@@ -583,10 +786,10 @@ def run_agent_turn(
         reflection_engine = orch.reflection
         model_switcher = orch.model_switcher
         logger.info("CyberneticOrchestrator: %d controllers initialized", 15)
-        if smart_router and task:
+        if smart_router and prelude.task:
             try:
                 current_model_id = model.model_id if hasattr(model, 'model_id') else ""
-                task_text = task.raw_input if hasattr(task, 'raw_input') else str(current_messages[-1].get('content', ''))
+                task_text = prelude.task.raw_input if hasattr(prelude.task, 'raw_input') else str(current_messages[-1].get('content', ''))
                 routing, switch_result = smart_router.route_and_switch(
                     task_text,
                     current_model=current_model_id,
@@ -607,17 +810,24 @@ def run_agent_turn(
                 pass
 
         # 初始化前馈控制器（预判式优化）
-        if task:
+        if prelude.task:
             feedforward_controller = FeedforwardController()
-            preemptive_config = feedforward_controller.preconfigure(task.parsed_intent, task.raw_input)
-            risk_assessment = feedforward_controller.assess_risks(task.parsed_intent, preemptive_config)
+            preemptive_config = feedforward_controller.preconfigure(prelude.task.parsed_intent, prelude.task.raw_input)
+            risk_assessment = feedforward_controller.assess_risks(prelude.task.parsed_intent, preemptive_config)
             logger.info(
                 "Feedforward control: config=%s risk=%s",
                 preemptive_config.recommended_model, risk_assessment.risk_level,
             )
             # Apply feedforward preemptive config to execution parameters
             if preemptive_config.confidence > 0.6:
-                max_steps = min(max_steps, preemptive_config.max_turn_steps)
+                if turn_state.max_steps is None:
+                    turn_state.max_steps = preemptive_config.max_turn_steps
+                else:
+                    turn_state.max_steps = min(
+                        turn_state.max_steps,
+                        preemptive_config.max_turn_steps,
+                    )
+                max_steps = turn_state.max_steps
                 logger.info(
                     "Feedforward: max_steps=%d model=%s timeout=%.1fs",
                     preemptive_config.max_turn_steps,
@@ -633,10 +843,10 @@ def run_agent_turn(
                 )
 
         # 模型选择控制器：根据任务特征推荐模型
-        if model_selection_ctrl and task:
+        if model_selection_ctrl and prelude.task:
             try:
                 model_signal = ModelSelectionSignal(
-                    task_complexity=getattr(task, 'complexity', 'moderate') if hasattr(task, 'complexity') else "moderate",
+                    task_complexity=getattr(prelude.task, 'complexity', 'moderate') if hasattr(prelude.task, 'complexity') else "moderate",
                     budget_pressure=0.3,
                     latency_pressure=0.3,
                     recent_failures=0,
@@ -709,15 +919,15 @@ def run_agent_turn(
                 except Exception:
                     pass
             # 执行实际记忆注入：将相关记忆注入到系统 prompt 中
-            if orch and task:
+            if orch and prelude.task:
                 try:
-                    task_desc = task.raw_input if hasattr(task, 'raw_input') else ""
+                    task_desc = prelude.task.raw_input if hasattr(prelude.task, 'raw_input') else ""
                     current_messages = orch.inject_memories(task_desc, current_messages)
                 except Exception:
                     pass
-            elif memory_injector and task:
+            elif memory_injector and prelude.task:
                 try:
-                    task_desc = task.raw_input if hasattr(task, 'raw_input') else ""
+                    task_desc = prelude.task.raw_input if hasattr(prelude.task, 'raw_input') else ""
                     injected = memory_injector.inject_for_task(task_desc)
                     if injected:
                         logger.info(
@@ -753,8 +963,8 @@ def run_agent_turn(
                 safety_margin_turns=3,
                 enabled=True,
             )
-            if task and hasattr(task, 'parsed_intent') and task.parsed_intent:
-                context_cybernetics.set_intent(str(task.parsed_intent.intent_type))
+            if prelude.task and hasattr(prelude.task, 'parsed_intent') and prelude.task.parsed_intent:
+                context_cybernetics.set_intent(str(prelude.task.parsed_intent.intent_type))
             logger.info("ContextCybernetics initialized: PID control loop + predictive guard")
             if orch:
                 orch.context_compactor = context_compactor
@@ -798,7 +1008,7 @@ def run_agent_turn(
                 adj = cost_control.run(
                     cost_usd=est_cost,
                     total_tokens=stats.total_tokens,
-                    total_calls=max(step, 1),
+                    total_calls=max(turn_state.step, 1),
                 )
                 if context_compactor and hasattr(context_compactor, '_tool_budget') and context_compactor._tool_budget:
                     cost_control.apply_to_budget_manager(context_compactor._tool_budget)
@@ -810,9 +1020,9 @@ def run_agent_turn(
 
             cyber_messages, cyber_result, cyber_action = context_cybernetics.run_cycle(
                 current_messages,
-                error_rate=float(tool_error_count) / max(step, 1) if step > 0 else 0.0,
-                avg_latency=step * 2.0,
-                turn_id=step,
+                error_rate=float(turn_state.tool_error_count) / max(turn_state.step, 1) if turn_state.step > 0 else 0.0,
+                avg_latency=turn_state.step * 2.0,
+                turn_id=turn_state.step,
             )
             if cyber_result and cyber_result.effective:
                 current_messages = cyber_messages
@@ -843,8 +1053,56 @@ def run_agent_turn(
                 on_assistant_message(context_manager.get_context_summary())
 
     try:
-        while max_steps is None or step < max_steps:
-            step += 1
+        # Recurrent kernel: repeated think/act/observe iterations over one turn.
+        while turn_state.has_remaining_steps():
+            step = turn_state.begin_step()
+            previous_policy = turn_state.step_policy
+            current_policy = derive_turn_step_policy(turn_state)
+            policy_message = render_turn_policy_message(
+                previous_policy=previous_policy,
+                current_policy=current_policy,
+            )
+            if policy_message:
+                turn_state.set_progress_summary(policy_message)
+                emit_runtime_event(category="phase", message=policy_message)
+                logger.info("Turn policy update: %s", policy_message)
+            if (
+                current_policy.should_compact_aggressively
+                and context_manager
+                and context_manager.should_auto_compact()
+            ):
+                current_messages = context_manager.compact_messages()
+                emit_runtime_event(
+                    category="compaction",
+                    message="Compacted context for the current runtime phase.",
+                )
+            protected_context = get_working_memory().get_protected_content()
+            turn_state.stable_task_pack = build_stable_task_pack(
+                task=prelude.task,
+                task_metadata=prelude.task_metadata,
+                protected_context=protected_context,
+                task_graph=prelude.task_graph,
+                task_slot_key=prelude.task_slot_key,
+                latest_tool_result_summary=turn_state.latest_tool_result_summary,
+                progress_state=turn_state.progress_state,
+                verification_state=turn_state.verification_state,
+                budget_signals=turn_state.budget_signals,
+            )
+            if turn_state.stable_task_pack:
+                stable_text = turn_state.stable_task_pack.to_protected_text()
+                current_messages = _upsert_stable_task_state_message(
+                    current_messages,
+                    stable_text,
+                )
+                if runtime_profile.name == "single-deep":
+                    protect_context(
+                        content=stable_text,
+                        entry_type="active_task",
+                        ttl_seconds=runtime_profile.working_memory_ttl_seconds,
+                        importance=runtime_profile.working_memory_importance,
+                    )
+                if context_manager:
+                    context_manager.messages = current_messages
 
             # Hook: agent turn started
             fire_hook_sync(HookEvent.AGENT_START, step=step, cwd=cwd)
@@ -854,8 +1112,8 @@ def run_agent_turn(
                 orch.step_start(
                     context_manager=context_manager,
                     step=step,
-                    tool_error_count=tool_error_count,
-                    saw_tool_result=saw_tool_result,
+                    tool_error_count=turn_state.tool_error_count,
+                    saw_tool_result=turn_state.saw_tool_result,
                 )
             elif enable_work_chain:
                 # 状态观测：通过可测量输出估计系统内部状态
@@ -863,9 +1121,9 @@ def run_agent_turn(
                     measurement = MeasurementVector(
                         timestamp=time.time(),
                         response_time=step * 2.0,  # 估算响应时间
-                        success_rate=1.0 - (tool_error_count / max(step, 1)),
+                        success_rate=1.0 - (turn_state.tool_error_count / max(step, 1)),
                         context_length=context_manager.get_stats().total_tokens if context_manager else 0,
-                        error_count=tool_error_count,
+                        error_count=turn_state.tool_error_count,
                         tool_calls=0,
                     )
                     observed_state = state_observer.update(measurement)
@@ -894,7 +1152,7 @@ def run_agent_turn(
                     if context_manager:
                         stats = context_manager.get_stats()
                         predictive_controller.update("context_usage", stats.usage_percentage / 100.0)
-                    predictive_controller.update("error_rate", tool_error_count / max(step, 1))
+                    predictive_controller.update("error_rate", turn_state.tool_error_count / max(step, 1))
 
                     if step > 2:
                         actions = predictive_controller.generate_predictive_actions()
@@ -931,7 +1189,7 @@ def run_agent_turn(
                             if self_healing_engine:
                                 healing_actions = self_healing_engine.detect_and_heal({
                                     "context_usage": stats.usage_percentage / 100.0 if context_manager else 0.0,
-                                    "error_rate": tool_error_count / max(step, 1),
+                                    "error_rate": turn_state.tool_error_count / max(step, 1),
                                 })
                                 if healing_actions:
                                     logger.info("Self-healing: %s", healing_actions[0].strategy)
@@ -953,6 +1211,13 @@ def run_agent_turn(
             except ConnectionError as error:
                 fallback = f"Network error (connection failed or dropped): {error}"
                 logger.error("Model API connection error: %s", error)
+                turn_state.set_stop_reason("blocked")
+                emit_runtime_event(
+                    category="stop",
+                    message=fallback,
+                    emit_progress=False,
+                    stop_reason="blocked",
+                )
                 if on_assistant_message:
                     on_assistant_message(fallback)
                 current_messages.append({"role": "assistant", "content": fallback})
@@ -962,6 +1227,13 @@ def run_agent_turn(
             except TimeoutError as error:
                 fallback = f"Model API timeout: {error}"
                 logger.error("Model API timeout: %s", error)
+                turn_state.set_stop_reason("blocked")
+                emit_runtime_event(
+                    category="stop",
+                    message=fallback,
+                    emit_progress=False,
+                    stop_reason="blocked",
+                )
                 if on_assistant_message:
                     on_assistant_message(fallback)
                 current_messages.append({"role": "assistant", "content": fallback})
@@ -971,7 +1243,13 @@ def run_agent_turn(
             except Exception as error:
                 # Catch-all for unexpected errors (rate limit, auth, server 5xx, etc.)
                 error_type = type(error).__name__
-                fallback = f"Model API error ({error_type}): {error}"
+                active_model_id = _infer_active_model_id(model, runtime, error)
+                fallback = _summarize_model_api_failure(
+                    error_type=error_type,
+                    error=error,
+                    active_model_id=active_model_id,
+                    runtime=runtime,
+                )
                 logger.error("Model API error (%s): %s", error_type, error)
 
                 # Reactive Compact: 控制论恢复路径
@@ -1001,24 +1279,52 @@ def run_agent_turn(
                         continue
 
                 # ModelSwitcher: 尝试切换到备用模型并重试
-                if model_switcher and "rate" not in error_str:
+                if model_switcher and "rate" not in error_str and _should_attempt_model_fallback(error_str):
                     try:
+                        if hasattr(model_switcher, "sync_current_model"):
+                            model_switcher.sync_current_model(active_model_id, adapter=model)
+                        if hasattr(model_switcher, "record_runtime_failure"):
+                            model_switcher.record_runtime_failure(active_model_id)
+                        if runtime is not None:
+                            runtime["recentFailures"] = int(runtime.get("recentFailures", 0) or 0) + 1
                         switch_result = model_switcher.switch_to(
                             "",  # Let switcher pick fallback
                             reason=f"{error_type}: {error_str[:80]}",
                         )
                         if switch_result.success and switch_result.adapter is not None:
                             model = switch_result.adapter
+                            fallback_message = (
+                                f"Model fallback: switched from {switch_result.old_model} "
+                                f"to {switch_result.new_model} after {error_type}."
+                            )
                             logger.info(
                                 "ModelSwitcher: switched to %s, retrying with new adapter",
                                 switch_result.new_model,
                             )
+                            emit_runtime_event(
+                                category="recovery",
+                                message=fallback_message,
+                            )
                             continue
+                        fallback = _summarize_model_api_failure(
+                            error_type=error_type,
+                            error=error,
+                            active_model_id=active_model_id,
+                            fallback_errors=switch_result.errors,
+                            runtime=runtime,
+                        )
                     except Exception:
                         pass
 
                 if on_assistant_message:
                     on_assistant_message(fallback)
+                turn_state.set_stop_reason("blocked")
+                emit_runtime_event(
+                    category="stop",
+                    message=fallback,
+                    emit_progress=False,
+                    stop_reason="blocked",
+                )
                 current_messages.append({"role": "assistant", "content": fallback})
                 if metrics_collector:
                     metrics_collector.end_turn(total_tokens=0)
@@ -1026,102 +1332,181 @@ def run_agent_turn(
 
             if next_step.type == "assistant":
                 is_empty = _is_empty_assistant_response(next_step.content)
-                if not is_empty and _should_treat_assistant_as_progress(
-                    kind=getattr(next_step, 'kind', None),
-                    content=next_step.content,
-                    saw_tool_result=saw_tool_result,
-                ):
-                    if on_progress_message:
-                        on_progress_message(next_step.content)
-                    current_messages.append({"role": "assistant_progress", "content": next_step.content})
-                    current_messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                NUDGE_AFTER_TOOL_RESULT
-                                if saw_tool_result and getattr(next_step, 'kind', None) != "progress"
-                                else NUDGE_CONTINUE
-                            ),
-                        }
-                    )
-                    continue
-
                 diagnostics = next_step.diagnostics
-
-                if _is_recoverable_thinking_stop(
-                    is_empty=is_empty,
+                assistant_decision = decide_assistant_turn(
+                    turn_state=turn_state,
+                    step_content=next_step.content,
+                    step_kind=getattr(next_step, "kind", None),
                     stop_reason=diagnostics.stopReason if diagnostics else None,
+                    block_types=diagnostics.blockTypes if diagnostics else None,
                     ignored_block_types=diagnostics.ignoredBlockTypes if diagnostics else None,
-                ) and recoverable_thinking_retry_count < 3:
-                    recoverable_thinking_retry_count += 1
-                    stop_reason = diagnostics.stopReason if diagnostics else None
-                    progress_content = (
-                        "Model hit max_tokens during thinking; requesting the next step."
-                        if stop_reason == "max_tokens"
-                        else "Model returned pause_turn; requesting the next step."
-                    )
-                    if on_progress_message:
-                        on_progress_message(progress_content)
-                    current_messages.append({"role": "assistant_progress", "content": progress_content})
-                    current_messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                RESUME_AFTER_PAUSE
-                                if stop_reason == "pause_turn"
-                                else RESUME_AFTER_MAX_TOKENS
-                            ),
-                        }
-                    )
-                    continue
-
-                if is_empty and empty_response_retry_count < 2:
-                    empty_response_retry_count += 1
-                    current_messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                NUDGE_AFTER_EMPTY_RESPONSE
-                                if saw_tool_result
-                                else NUDGE_AFTER_EMPTY_NO_TOOLS
-                            ),
-                        }
-                    )
-                    continue
-
-                if is_empty:
-                    diagnostics_suffix = _format_diagnostics(
-                        diagnostics.stopReason if diagnostics else None,
-                        diagnostics.blockTypes if diagnostics else None,
-                        diagnostics.ignoredBlockTypes if diagnostics else None,
-                    )
-                    if saw_tool_result:
-                        fallback = (
-                            f"Model returned an empty response after tool execution and the turn was stopped. There were {tool_error_count} tool error(s); retry, adjust the command, or choose a different approach.{diagnostics_suffix}"
-                            if tool_error_count > 0
-                            else f"Model returned an empty response after tool execution and the turn was stopped. Retry or ask the model to continue the remaining steps.{diagnostics_suffix}"
+                    is_empty=is_empty,
+                    treat_as_progress=(
+                        not is_empty
+                        and _should_treat_assistant_as_progress(
+                            kind=getattr(next_step, "kind", None),
+                            content=next_step.content,
+                            saw_tool_result=turn_state.saw_tool_result,
                         )
-                    else:
-                        fallback = f"Model returned an empty response and the turn was stopped.{diagnostics_suffix}"
-                    if on_assistant_message:
-                        on_assistant_message(fallback)
-                    current_messages.append({"role": "assistant", "content": fallback})
+                    ),
+                    is_recoverable_thinking_stop=_is_recoverable_thinking_stop(
+                        is_empty=is_empty,
+                        stop_reason=diagnostics.stopReason if diagnostics else None,
+                        ignored_block_types=diagnostics.ignoredBlockTypes if diagnostics else None,
+                    ),
+                    format_diagnostics=_format_diagnostics,
+                    nudge_continue=NUDGE_CONTINUE,
+                    nudge_after_tool_result=NUDGE_AFTER_TOOL_RESULT,
+                    resume_after_pause=RESUME_AFTER_PAUSE,
+                    resume_after_max_tokens=RESUME_AFTER_MAX_TOKENS,
+                    nudge_after_empty_response=NUDGE_AFTER_EMPTY_RESPONSE,
+                    nudge_after_empty_no_tools=NUDGE_AFTER_EMPTY_NO_TOOLS,
+                    step_policy=turn_state.step_policy,
+                )
+
+                if assistant_decision.kind == "progress":
+                    if assistant_decision.assistant_content:
+                        turn_state.set_progress_summary(assistant_decision.assistant_content)
+                        if assistant_decision.runtime_event_category is not None:
+                            emit_runtime_event(
+                                category=assistant_decision.runtime_event_category,
+                                message=assistant_decision.assistant_content,
+                                evidence_summary=(
+                                    turn_state.verification_state.evidence_summary
+                                    or turn_state.latest_tool_result_summary
+                                ),
+                            )
+                        elif on_progress_message:
+                            on_progress_message(assistant_decision.assistant_content)
+                        current_messages.append(
+                            {
+                                "role": "assistant_progress",
+                                "content": assistant_decision.assistant_content,
+                            }
+                        )
+                    if assistant_decision.user_content:
+                        current_messages.append(
+                            {
+                                "role": "user",
+                                "content": assistant_decision.user_content,
+                            }
+                        )
+                    continue
+
+                if assistant_decision.kind == "retry":
+                    if assistant_decision.user_content:
+                        current_messages.append(
+                            {
+                                "role": "user",
+                                "content": assistant_decision.user_content,
+                            }
+                        )
+                    continue
+
+                if assistant_decision.kind == "fallback":
+                    if assistant_decision.stop_reason == "widen_needed":
+                        transitioned = turn_state.activate_widening(
+                            extra_steps=runtime_profile.widening_step_bonus,
+                        )
+                        if transitioned:
+                            widening_message = (
+                                assistant_decision.assistant_content
+                                or "Depth stalled; switching to widened mode."
+                            )
+                            if turn_state.widening_trigger_reason:
+                                widening_message += (
+                                    " Escalation trigger: "
+                                    f"{turn_state.widening_trigger_reason}."
+                                )
+                            turn_state.set_progress_summary(
+                                "runtime widened after the narrow path stalled"
+                            )
+                            emit_runtime_event(
+                                category="widening",
+                                message=widening_message,
+                                widening_reason=turn_state.widening_trigger_reason,
+                                evidence_summary=turn_state.widening_trigger_evidence,
+                            )
+                            current_messages.append(
+                                {
+                                    "role": "assistant_progress",
+                                    "content": widening_message,
+                                }
+                            )
+                            current_messages.append(
+                                {
+                                    "role": "user",
+                                    "content": build_widening_transition_nudge(
+                                        turn_state.latest_tool_result_summary,
+                                        widening_reason=turn_state.widening_trigger_reason,
+                                        widening_evidence_summary=turn_state.widening_trigger_evidence,
+                                    ),
+                                }
+                            )
+                            continue
+                    if assistant_decision.stop_reason:
+                        turn_state.set_stop_reason(assistant_decision.stop_reason)
+                        emit_runtime_event(
+                            category="stop",
+                            message=(
+                                assistant_decision.assistant_content
+                                or "Turn stopped without a final answer."
+                            ),
+                            emit_progress=False,
+                            stop_reason=assistant_decision.stop_reason,
+                            evidence_summary=(
+                                turn_state.verification_state.evidence_summary
+                                or turn_state.latest_tool_result_summary
+                            ),
+                        )
+                    if assistant_decision.assistant_content and on_assistant_message:
+                        on_assistant_message(assistant_decision.assistant_content)
+                    if assistant_decision.assistant_content:
+                        current_messages.append(
+                            {
+                                "role": "assistant",
+                                "content": assistant_decision.assistant_content,
+                            }
+                        )
                     return current_messages
 
-                if on_assistant_message:
-                    on_assistant_message(next_step.content)
-                current_messages.append({"role": "assistant", "content": next_step.content})
-                # Protect final answer in working memory
-                protect_context(
-                    content=next_step.content[:500],
-                    entry_type="key_decision",
-                    ttl_seconds=3600,
-                )
+                if assistant_decision.stop_reason:
+                    turn_state.set_stop_reason(assistant_decision.stop_reason)
+                    emit_runtime_event(
+                        category="stop",
+                        message=assistant_decision.assistant_content or "Turn completed.",
+                        emit_progress=False,
+                        stop_reason=assistant_decision.stop_reason,
+                        evidence_summary=(
+                            turn_state.verification_state.evidence_summary
+                            or turn_state.latest_tool_result_summary
+                        ),
+                    )
+                if model_switcher and hasattr(model_switcher, "clear_runtime_failures"):
+                    model_switcher.clear_runtime_failures()
+                if assistant_decision.assistant_content:
+                    turn_state.set_progress_summary("assistant finalized the turn")
+                    if on_assistant_message:
+                        on_assistant_message(assistant_decision.assistant_content)
+                    current_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": assistant_decision.assistant_content,
+                        }
+                    )
+                if assistant_decision.protect_final_answer and assistant_decision.assistant_content:
+                    protect_context(
+                        content=assistant_decision.assistant_content[:500],
+                        entry_type="key_decision",
+                        ttl_seconds=runtime_profile.working_memory_ttl_seconds,
+                        importance=runtime_profile.working_memory_importance,
+                    )
                 return current_messages
 
             if next_step.content:
                 role = "assistant_progress" if next_step.contentKind == "progress" else "assistant"
                 if role == "assistant_progress":
+                    turn_state.set_progress_summary(next_step.content)
                     if on_progress_message:
                         on_progress_message(next_step.content)
                     current_messages.append({"role": role, "content": next_step.content})
@@ -1132,11 +1517,23 @@ def run_agent_turn(
                         }
                     )
                 else:
+                    turn_state.set_progress_summary(next_step.content)
                     if on_assistant_message:
                         on_assistant_message(next_step.content)
                     current_messages.append({"role": role, "content": next_step.content})
 
             if not next_step.calls and next_step.content and next_step.contentKind != "progress":
+                turn_state.set_stop_reason("done")
+                emit_runtime_event(
+                    category="stop",
+                    message=next_step.content,
+                    emit_progress=False,
+                    stop_reason="done",
+                    evidence_summary=(
+                        turn_state.verification_state.evidence_summary
+                        or turn_state.latest_tool_result_summary
+                    ),
+                )
                 return current_messages
 
             # --- Concurrent tool execution ---
@@ -1150,7 +1547,7 @@ def run_agent_turn(
                 if metrics_collector:
                     metrics_collector.start_tool(call["toolName"])
                 result = _execute_single_tool(
-                    call, tools, cwd, permissions, runtime, store, step,
+                    call, tools, cwd, permissions, session, runtime, store, step,
                     on_tool_start, on_tool_result, tool_scheduler,
                 )
                 if metrics_collector:
@@ -1169,9 +1566,9 @@ def run_agent_turn(
                 if concurrent_calls:
                     max_workers = tool_scheduler.get_recommended_max_workers(
                         concurrent_calls,
-                        error_rate=tool_error_count / max(step, 1),
+                        error_rate=turn_state.tool_error_count / max(step, 1),
                         avg_latency=step * 2.0,
-                        recent_failures=tool_error_count,
+                        recent_failures=turn_state.tool_error_count,
                     )
                     # Apply cybernetic concurrency cap if FeedbackController reduced parallelism
                     force_cap = getattr(tool_scheduler, '_force_max_workers', None)
@@ -1192,8 +1589,8 @@ def run_agent_turn(
                         future_to_call = {
                             pool.submit(
                                 _execute_single_tool,
-                                call, tools, cwd, permissions, runtime, None, step,
-                                None, None,  # No UI callbacks during concurrent phase
+                                call, tools, cwd, permissions, session, runtime, None, step,
+                                None, None, tool_scheduler,  # No UI callbacks during concurrent phase
                             ): call
                             for call in concurrent_calls
                         }
@@ -1211,7 +1608,7 @@ def run_agent_turn(
                         if metrics_collector:
                             metrics_collector.start_tool(call["toolName"])
                         result = _execute_single_tool(
-                            call, tools, cwd, permissions, runtime, store, step,
+                            call, tools, cwd, permissions, session, runtime, store, step,
                             on_tool_start, on_tool_result, tool_scheduler,
                         )
                         if metrics_collector:
@@ -1263,12 +1660,19 @@ def run_agent_turn(
                     if on_tool_result:
                         on_tool_result(call["toolName"], result.output, not result.ok)
                 
-                saw_tool_result = True
+                tool_summary = f"{call['toolName']}: {result.output[:200]}"
+                turn_state.record_tool_result(result.ok, summary=tool_summary)
+                tool_decision = decide_tool_turn(
+                    tool_name=call["toolName"],
+                    result_output=result.output,
+                    await_user=result.awaitUser,
+                )
+                if tool_decision.progress_summary:
+                    turn_state.set_progress_summary(tool_decision.progress_summary)
                 if not result.ok:
-                    tool_error_count += 1
                     # Use ErrorClassifier for intelligent error handling
                     classified = ErrorClassifier.classify(result.output, tool_name=call["toolName"])
-                    nudge = NudgeGenerator.generate(classified, retry_count=tool_error_count)
+                    nudge = NudgeGenerator.generate(classified, retry_count=turn_state.tool_error_count)
                     # Append nudge to tool result content for model context
                     result_output = result.output + "\n\n[System note: " + nudge + "]"
                 else:
@@ -1321,10 +1725,24 @@ def run_agent_turn(
                         "isError": not result.ok,
                     }
                 )
-                if result.awaitUser:
-                    if on_assistant_message:
-                        on_assistant_message(result_output)
-                    current_messages.append({"role": "assistant", "content": result_output})
+                if tool_decision.kind == "await_user":
+                    if tool_decision.stop_reason:
+                        turn_state.set_stop_reason(tool_decision.stop_reason)
+                        emit_runtime_event(
+                            category="stop",
+                            message=tool_decision.assistant_content or result_output,
+                            emit_progress=False,
+                            stop_reason=tool_decision.stop_reason,
+                            evidence_summary=turn_state.latest_tool_result_summary,
+                        )
+                    if tool_decision.assistant_content and on_assistant_message:
+                        on_assistant_message(tool_decision.assistant_content)
+                    current_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": tool_decision.assistant_content or result_output,
+                        }
+                    )
                     if metrics_collector:
                         metrics_collector.end_turn(total_tokens=0)
                     return current_messages
@@ -1340,7 +1758,7 @@ def run_agent_turn(
                         ),
                         "context_pressure_to_errors": (
                             context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
-                            tool_error_count / max(step, 1),
+                            turn_state.tool_error_count / max(step, 1),
                         ),
                     })
                     decoupling_controller.compute_decoupling_matrix()
@@ -1350,14 +1768,14 @@ def run_agent_turn(
                         tool_scheduler=tool_scheduler,
                         context_manager=context_manager,
                         step=step,
-                        tool_error_count=tool_error_count,
-                        saw_tool_result=saw_tool_result,
-                        max_steps=max_steps,
+                        tool_error_count=turn_state.tool_error_count,
+                        saw_tool_result=turn_state.saw_tool_result,
+                        max_steps=turn_state.max_steps,
                     )
-                    max_steps = _apply_control_signal(
+                    turn_state.max_steps = _apply_control_signal(
                         control_signal=step_summary.get("control_signal"),
                         system_state=step_summary.get("system_state"),
-                        max_steps=max_steps,
+                        max_steps=turn_state.max_steps,
                         tool_scheduler=tool_scheduler,
                         context_compactor=context_compactor,
                         model_switcher=model_switcher,
@@ -1367,7 +1785,7 @@ def run_agent_turn(
                     # 自愈检测：检测并修复故障
                     if self_healing_engine:
                         metrics_for_healing = {
-                            "error_rate": tool_error_count / max(step, 1),
+                            "error_rate": turn_state.tool_error_count / max(step, 1),
                             "context_usage": context_manager.get_stats().usage_percentage / 100.0 if context_manager else 0.0,
                             "oscillation_index": feedback_controller._compute_oscillation() if feedback_controller else 0.0,
                         }
@@ -1378,14 +1796,14 @@ def run_agent_turn(
                     # 进度控制：检测任务是否卡住或完成
                     if progress_controller:
                         progress_signal = ProgressSignal(
-                            total_steps=max_steps,
-                            completed_steps=step - tool_error_count,
-                            failed_steps=tool_error_count,
+                            total_steps=turn_state.max_steps,
+                            completed_steps=step - turn_state.tool_error_count,
+                            failed_steps=turn_state.tool_error_count,
                             tool_calls=step,
-                            tool_errors=tool_error_count,
-                            output_changed=saw_tool_result,
+                            tool_errors=turn_state.tool_error_count,
+                            output_changed=turn_state.saw_tool_result,
                             elapsed_seconds=step * 2.0,
-                            max_steps=max_steps,
+                            max_steps=turn_state.max_steps,
                         )
                         progress_decision = progress_controller.decide(progress_signal)
                         if progress_decision.action in (ProgressAction.STOP, ProgressAction.REQUEST_CONFIRMATION):
@@ -1407,12 +1825,33 @@ def run_agent_turn(
             continue
 
         fallback = "Reached the maximum tool step limit for this turn."
+        turn_state.set_stop_reason("max_steps")
+        emit_runtime_event(
+            category="stop",
+            message=fallback,
+            emit_progress=False,
+            stop_reason="max_steps",
+            evidence_summary=(
+                turn_state.verification_state.evidence_summary
+                or turn_state.latest_tool_result_summary
+            ),
+        )
         if on_assistant_message:
             on_assistant_message(fallback)
         current_messages.append({"role": "assistant", "content": fallback})
         return current_messages
     finally:
-        fire_hook_sync(HookEvent.AGENT_STOP, step=step, tool_errors=tool_error_count)
+        # Coda: finalize metrics, work-chain bookkeeping, and control summaries.
+        fire_hook_sync(
+            HookEvent.AGENT_STOP,
+            step=turn_state.step,
+            tool_errors=turn_state.tool_error_count,
+        )
+        step = turn_state.step
+        tool_error_count = turn_state.tool_error_count
+        task = prelude.task
+        task_metadata = prelude.task_metadata
+        auditor = prelude.auditor
 
         if metrics_collector and metrics_collector._current_turn is not None:
             total_tokens = sum(
@@ -1420,50 +1859,101 @@ def run_agent_turn(
             ) if context_manager else 0
             metrics_collector.end_turn(total_tokens=total_tokens)
 
-        if enable_work_chain and task:
-            final_state = TaskState.COMPLETED if tool_error_count == 0 else TaskState.FAILED
-            task.set_state(final_state)
-            task.result_summary = f"Turn completed: {step} steps, {tool_error_count} errors"
+        context_usage = 0.0
+        if context_manager:
+            try:
+                context_usage = context_manager.get_stats().usage_percentage / 100.0
+            except Exception:
+                context_usage = 0.0
+        coda_summary = build_turn_coda_summary(
+            turn_state=turn_state,
+            context_usage=context_usage,
+        )
 
-            if auditor:
-                outcome = DecisionOutcome.SUCCESS if tool_error_count == 0 else DecisionOutcome.FAILURE
-                auditor.complete_decision(
-                    outcome,
-                    step * 100.0,
-                    task.result_summary,
-                    task.error_message if tool_error_count > 0 else "",
-                )
+        if enable_work_chain and prelude.task:
+            finalize_work_chain_task(
+                task=prelude.task,
+                auditor=prelude.auditor,
+                coda_summary=coda_summary,
+                success_outcome=DecisionOutcome.SUCCESS,
+                failure_outcome=DecisionOutcome.FAILURE,
+            )
+
+            if prelude.task_graph and prelude.task_slot_key:
+                try:
+                    if coda_summary.task_state is TaskState.COMPLETED:
+                        prelude.task_graph.complete_task(
+                            prelude.task_slot_key,
+                            result=prelude.task.result_summary,
+                        )
+                    elif coda_summary.task_state is TaskState.PAUSED:
+                        slot = prelude.task_graph.slots.get(prelude.task_slot_key)
+                        if slot is not None:
+                            slot.state = GraphTaskState.QUEUED
+                            slot.result = prelude.task.result_summary
+                            prelude.task_graph.updated_at = time.time()
+                    else:
+                        prelude.task_graph.fail_task(
+                            prelude.task_slot_key,
+                            prelude.task.result_summary,
+                        )
+                except Exception:
+                    logger.debug("TaskGraph finalization skipped", exc_info=True)
 
             logger.info(
-                "Work chain completed: task=%s state=%s steps=%d errors=%d",
-                task.id, task.state.value, step, tool_error_count,
+                "Work chain completed: task=%s state=%s stop_reason=%s steps=%d errors=%d",
+                prelude.task.id,
+                prelude.task.state.value,
+                coda_summary.stop_reason,
+                turn_state.step,
+                turn_state.tool_error_count,
             )
 
             # 任务后自省：提取经验教训
-            if orch and task:
+            if orch and prelude.task:
                 try:
                     execution_trace: list[dict[str, Any]] = [
-                        {"type": "tool_call", "count": step},
-                        {"type": "error", "count": tool_error_count, "content": f"{tool_error_count} errors"} if tool_error_count > 0 else {},
-                        {"type": "assistant", "steps": step},
+                        {"type": "tool_call", "count": turn_state.step},
+                        {
+                            "type": "error",
+                            "count": turn_state.tool_error_count,
+                            "content": f"{turn_state.tool_error_count} errors",
+                        }
+                        if turn_state.tool_error_count > 0
+                        else {},
+                        {"type": "assistant", "steps": turn_state.step},
                     ]
                     orch.reflect_on_task(
-                        task_description=task.raw_input if hasattr(task, 'raw_input') else str(task.id),
-                        step=step,
-                        tool_error_count=tool_error_count,
+                        task_description=(
+                            prelude.task.raw_input
+                            if hasattr(prelude.task, "raw_input")
+                            else str(prelude.task.id)
+                        ),
+                        step=turn_state.step,
+                        tool_error_count=turn_state.tool_error_count,
                         execution_trace=execution_trace,
                     )
                 except Exception:
                     pass
-            elif reflection_engine and task:
+            elif reflection_engine and prelude.task:
                 try:
                     execution_trace: list[dict[str, Any]] = [
-                        {"type": "tool_call", "count": step},
-                        {"type": "error", "count": tool_error_count, "content": f"{tool_error_count} errors"} if tool_error_count > 0 else {},
-                        {"type": "assistant", "steps": step},
+                        {"type": "tool_call", "count": turn_state.step},
+                        {
+                            "type": "error",
+                            "count": turn_state.tool_error_count,
+                            "content": f"{turn_state.tool_error_count} errors",
+                        }
+                        if turn_state.tool_error_count > 0
+                        else {},
+                        {"type": "assistant", "steps": turn_state.step},
                     ]
                     reflection = reflection_engine.reflect(
-                        task_description=task.raw_input if hasattr(task, 'raw_input') else str(task.id),
+                        task_description=(
+                            prelude.task.raw_input
+                            if hasattr(prelude.task, "raw_input")
+                            else str(prelude.task.id)
+                        ),
                         execution_trace=execution_trace,
                     )
                     logger.info(
@@ -1491,7 +1981,9 @@ def run_agent_turn(
                                 if scope in _mgr.memories:
                                     entry = _mgr.memories[scope]._id_index.get(mem.id)
                                     if entry:
-                                        entry.usage_count += (2 if tool_error_count == 0 else -1)
+                                        entry.usage_count += (
+                                            2 if turn_state.tool_error_count == 0 else -1
+                                        )
                                         entry.last_accessed = time.time()
                                         break
                                         entry.last_accessed = time.time()
@@ -1502,15 +1994,21 @@ def run_agent_turn(
                     pass
 
             # 路由反馈学习：记录任务结果以优化未来路由
-            if smart_router and task:
+            if smart_router and prelude.task:
                 try:
                     outcome = TaskOutcome(
-                        task_text=task.raw_input if hasattr(task, 'raw_input') else str(task.id),
-                        assigned_model=model.model_id if hasattr(model, 'model_id') else "unknown",
-                        success=(tool_error_count == 0),
-                        duration_ms=step * 2000.0,
+                        task_text=(
+                            prelude.task.raw_input
+                            if hasattr(prelude.task, "raw_input")
+                            else str(prelude.task.id)
+                        ),
+                        assigned_model=(
+                            model.model_id if hasattr(model, "model_id") else "unknown"
+                        ),
+                        success=(turn_state.tool_error_count == 0),
+                        duration_ms=turn_state.step * 2000.0,
                         cost_usd=0.0,
-                        tool_errors=tool_error_count,
+                        tool_errors=turn_state.tool_error_count,
                         model_switches=model_switcher.switch_count() if model_switcher else 0,
                     )
                     smart_router.learner().record_outcome(outcome)
@@ -1518,10 +2016,12 @@ def run_agent_turn(
                     pass
 
         # 控制论反馈：记录模式有效性
-        if enable_work_chain and feedback_controller and task:
-            pattern_id = f"{task_metadata.get('intent_type', 'unknown')}_{task.id}"
+        if enable_work_chain and feedback_controller and prelude.task:
+            pattern_id = (
+                f"{prelude.task_metadata.get('intent_type', 'unknown')}_{prelude.task.id}"
+            )
             feedback_controller.record_pattern_effectiveness(
-                pattern_id, tool_error_count == 0
+                pattern_id, turn_state.tool_error_count == 0
             )
 
         # 稳定性监测：记录快照
@@ -1529,7 +2029,7 @@ def run_agent_turn(
             from minicode.stability_monitor import MetricSnapshot
             snapshot = MetricSnapshot(
                 timestamp=time.time(),
-                error_rate=float(tool_error_count) / max(step, 1),
+                error_rate=float(turn_state.tool_error_count) / max(turn_state.step, 1),
                 avg_latency=step * 2.0,  # 简化估算
                 context_usage=context_manager.get_stats().usage_percentage if context_manager else 0.0,
                 active_tasks=1,

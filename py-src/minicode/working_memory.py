@@ -17,9 +17,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from minicode.context_manager import estimate_tokens
-
-
 @dataclass
 class WorkingMemoryEntry:
     """A single working memory entry that should be protected during compaction."""
@@ -38,6 +35,8 @@ class WorkingMemoryEntry:
 
     def token_count(self) -> int:
         """Estimate token count for this entry."""
+        from minicode.context_manager import estimate_tokens
+
         return estimate_tokens(self.content)
 
 

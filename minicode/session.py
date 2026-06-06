@@ -50,6 +50,26 @@ class SessionMetadata:
     last_message: str = ""   # Truncated last message
     message_count: int = 0
     workspace: str = ""      # Working directory when session started
+    runtime_summary: str = ""  # Compact runtime timeline, if available
+    checkpoint_count: int = 0  # Number of stored rewind checkpoints
+    instruction_summary: str = ""
+    hook_summary: str = ""
+    delegation_summary: str = ""
+    extension_summary: str = ""
+    readiness_summary: str = ""
+
+
+@dataclass
+class FileCheckpoint:
+    """Persistent file snapshot captured before a write tool mutates disk."""
+
+    checkpoint_id: str
+    created_at: float
+    file_path: str
+    existed: bool
+    previous_content: str
+    kind: str = "edit"
+    group_id: str = ""
 
 
 @dataclass
@@ -65,11 +85,19 @@ class SessionData:
     permissions_summary: dict[str, Any] = field(default_factory=dict)
     skills: list[dict[str, Any]] = field(default_factory=list)
     mcp_servers: list[dict[str, Any]] = field(default_factory=list)
+    instruction_layers: list[dict[str, Any]] = field(default_factory=list)
+    hook_status: dict[str, Any] = field(default_factory=dict)
+    delegated_tasks: list[dict[str, Any]] = field(default_factory=list)
+    delegation_status: dict[str, Any] = field(default_factory=dict)
+    extension_manifests: list[dict[str, Any]] = field(default_factory=list)
+    readiness_report: dict[str, Any] = field(default_factory=dict)
+    checkpoints: list[FileCheckpoint] = field(default_factory=list)
     metadata: SessionMetadata = field(default=None)
     
     # Incremental save tracking
     _last_saved_msg_count: int = field(default=0, repr=False)
     _last_saved_transcript_count: int = field(default=0, repr=False)
+    _last_saved_checkpoint_count: int = field(default=0, repr=False)
     _delta_save_count: int = field(default=0, repr=False)
     _last_full_save_hash: str = field(default="", repr=False)
 
@@ -81,6 +109,12 @@ class SessionData:
                 updated_at=self.updated_at,
                 message_count=len(self.messages),
                 workspace=self.workspace,
+                checkpoint_count=len(self.checkpoints),
+                instruction_summary=_summarize_instruction_layers(self.instruction_layers),
+                hook_summary=_summarize_hook_status(self.hook_status),
+                delegation_summary=_summarize_delegation_status(self.delegation_status),
+                extension_summary=_summarize_extension_manifests(self.extension_manifests),
+                readiness_summary=_summarize_readiness_report(self.readiness_report),
             )
 
     def update_metadata(self) -> None:
@@ -88,6 +122,23 @@ class SessionData:
         self.updated_at = time.time()
         self.metadata.updated_at = self.updated_at
         self.metadata.message_count = len(self.messages)
+        self.metadata.runtime_summary = _runtime_summary_from_transcript_entries(
+            self.transcript_entries
+        )
+        self.metadata.checkpoint_count = len(self.checkpoints)
+        self.metadata.instruction_summary = _summarize_instruction_layers(
+            self.instruction_layers
+        )
+        self.metadata.hook_summary = _summarize_hook_status(self.hook_status)
+        self.metadata.delegation_summary = _summarize_delegation_status(
+            self.delegation_status
+        )
+        self.metadata.extension_summary = _summarize_extension_manifests(
+            self.extension_manifests
+        )
+        self.metadata.readiness_summary = _summarize_readiness_report(
+            self.readiness_report
+        )
 
         # Extract first user message (truncated)
         for msg in self.messages:
@@ -110,6 +161,7 @@ class SessionData:
         return (
             len(self.messages) != self._last_saved_msg_count
             or len(self.transcript_entries) != self._last_saved_transcript_count
+            or len(self.checkpoints) != self._last_saved_checkpoint_count
         )
     
     def _compute_content_hash(self) -> str:
@@ -121,6 +173,153 @@ class SessionData:
             if isinstance(content, str):
                 h.update(content[:500].encode())
         return h.hexdigest()
+
+
+def _runtime_trace_token_from_entry(entry: dict[str, Any]) -> str | None:
+    kind = str(entry.get("runtimeKind") or "").strip().lower()
+    category = str(entry.get("category") or "").strip().lower()
+    body = str(entry.get("body") or "")
+
+    if category != "runtime" and not kind:
+        normalized = " ".join(body.split()).lower()
+        if normalized.startswith("runtime phase:"):
+            kind = "phase"
+        elif normalized.startswith("verification guard:"):
+            kind = "guard"
+        elif "widened mode is active" in normalized or "widening is now available" in normalized:
+            kind = "widening"
+        elif normalized.startswith("turn completed") or normalized.startswith("turn complete"):
+            kind = "stop"
+        else:
+            return None
+
+    step = entry.get("runtimeStep")
+    step_suffix = f"@{step}" if isinstance(step, int) else ""
+    phase = str(entry.get("runtimePhase") or "").strip()
+    stop_reason = str(entry.get("runtimeStopReason") or "").strip()
+    verify = str(entry.get("runtimeVerificationFocus") or "").strip()
+
+    if kind == "phase":
+        return f"phase:{phase or 'unknown'}{step_suffix}"
+    if kind == "guard":
+        return f"guard:{verify or stop_reason or 'verification'}{step_suffix}"
+    if kind == "widening":
+        return f"widen:{stop_reason or 'escalation'}{step_suffix}"
+    if kind == "stop":
+        return f"stop:{stop_reason or 'done'}{step_suffix}"
+    if kind == "compaction":
+        return f"compact:{phase or 'context'}{step_suffix}"
+    if kind == "recovery":
+        return f"recover:{stop_reason or 'resume'}{step_suffix}"
+
+    return f"{kind or 'runtime'}{step_suffix}"
+
+
+def _runtime_summary_from_transcript_entries(entries: list[dict[str, Any]]) -> str:
+    tokens: list[str] = []
+    for entry in entries:
+        token = _runtime_trace_token_from_entry(entry)
+        if token and (not tokens or tokens[-1] != token):
+            tokens.append(token)
+    return " -> ".join(tokens)
+
+
+def _safe_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _named_list(items: list[Any], *, key: str = "name") -> list[str]:
+    names: list[str] = []
+    for item in items or []:
+        if isinstance(item, dict):
+            candidate = _safe_text(item.get(key) or item.get("label") or item.get("id"))
+            if candidate:
+                names.append(candidate)
+        else:
+            candidate = _safe_text(item)
+            if candidate:
+                names.append(candidate)
+    return names
+
+
+def _summarize_instruction_layers(layers: list[dict[str, Any]]) -> str:
+    names = _named_list(layers)
+    if not names:
+        return ""
+    return f"{len(names)} layer(s): {', '.join(names[:3])}" + ("..." if len(names) > 3 else "")
+
+
+def _summarize_hook_status(status: dict[str, Any]) -> str:
+    if not isinstance(status, dict):
+        return ""
+    summary = _safe_text(status.get("summary"))
+    if summary:
+        return summary
+    total = int(status.get("total_hooks", 0) or 0)
+    enabled = int(status.get("enabled_hooks", 0) or 0)
+    return f"{enabled}/{total} hook(s) enabled" if total else ""
+
+
+def _summarize_delegation_status(status: dict[str, Any]) -> str:
+    if not isinstance(status, dict):
+        return ""
+    summary = _safe_text(status.get("summary"))
+    if summary:
+        return summary
+    running = int(status.get("running_tasks", 0) or 0)
+    available = int(status.get("available_slots", 0) or 0)
+    return f"{running} running, {available} slot(s) open"
+
+
+def _summarize_extension_manifests(manifests: list[dict[str, Any]]) -> str:
+    names = _named_list(manifests)
+    if not names:
+        return ""
+    return f"{len(names)} extension(s): {', '.join(names[:3])}" + ("..." if len(names) > 3 else "")
+
+
+def _summarize_readiness_report(report: dict[str, Any]) -> str:
+    if not isinstance(report, dict):
+        return ""
+    summary = _safe_text(report.get("summary"))
+    if summary:
+        return summary
+    status = _safe_text(report.get("status"))
+    provider = _safe_text(report.get("provider"))
+    if status and provider:
+        return f"{status} via {provider}"
+    return status or provider
+
+
+def _format_named_collection(items: list[Any], *, fallback: str = "(none)") -> str:
+    names = _named_list(items)
+    return ", ".join(names) if names else fallback
+
+
+def _serialize_checkpoint(checkpoint: FileCheckpoint) -> dict[str, Any]:
+    return {
+        "checkpoint_id": checkpoint.checkpoint_id,
+        "created_at": checkpoint.created_at,
+        "file_path": checkpoint.file_path,
+        "existed": checkpoint.existed,
+        "previous_content": checkpoint.previous_content,
+        "kind": checkpoint.kind,
+        "group_id": checkpoint.group_id,
+    }
+
+
+def _deserialize_checkpoint(data: dict[str, Any]) -> FileCheckpoint:
+    return FileCheckpoint(
+        checkpoint_id=str(data["checkpoint_id"]),
+        created_at=float(data["created_at"]),
+        file_path=str(data["file_path"]),
+        existed=bool(data["existed"]),
+        previous_content=str(data.get("previous_content", "")),
+        kind=str(data.get("kind", "edit") or "edit"),
+        group_id=str(data.get("group_id", "")),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +370,13 @@ def _save_session_index(index: dict[str, SessionMetadata]) -> None:
             "last_message": meta.last_message,
             "message_count": meta.message_count,
             "workspace": meta.workspace,
+            "runtime_summary": meta.runtime_summary,
+            "checkpoint_count": meta.checkpoint_count,
+            "instruction_summary": meta.instruction_summary,
+            "hook_summary": meta.hook_summary,
+            "delegation_summary": meta.delegation_summary,
+            "extension_summary": meta.extension_summary,
+            "readiness_summary": meta.readiness_summary,
         }
         for sid, meta in index.items()
     }
@@ -193,8 +399,9 @@ def _save_delta(session: SessionData) -> None:
     # Collect new messages since last save
     new_messages = session.messages[session._last_saved_msg_count:]
     new_transcripts = session.transcript_entries[session._last_saved_transcript_count:]
+    new_checkpoints = session.checkpoints[session._last_saved_checkpoint_count:]
     
-    if not new_messages and not new_transcripts:
+    if not new_messages and not new_transcripts and not new_checkpoints:
         return
     
     # Create delta entry
@@ -207,6 +414,9 @@ def _save_delta(session: SessionData) -> None:
         delta_data["messages"] = new_messages
     if new_transcripts:
         delta_data["transcripts"] = new_transcripts
+    if new_checkpoints:
+        delta_data["checkpoint_offset"] = session._last_saved_checkpoint_count
+        delta_data["checkpoints"] = [_serialize_checkpoint(cp) for cp in new_checkpoints]
     
     # Write delta file with sequential numbering
     delta_num = session._delta_save_count
@@ -219,6 +429,7 @@ def _save_delta(session: SessionData) -> None:
     # Update tracking
     session._last_saved_msg_count = len(session.messages)
     session._last_saved_transcript_count = len(session.transcript_entries)
+    session._last_saved_checkpoint_count = len(session.checkpoints)
     session._delta_save_count += 1
 
 
@@ -289,6 +500,13 @@ def save_session(session: SessionData, force_full: bool = False) -> None:
             "permissions_summary": session.permissions_summary,
             "skills": session.skills,
             "mcp_servers": session.mcp_servers,
+            "instruction_layers": session.instruction_layers,
+            "hook_status": session.hook_status,
+            "delegated_tasks": session.delegated_tasks,
+            "delegation_status": session.delegation_status,
+            "extension_manifests": session.extension_manifests,
+            "readiness_report": session.readiness_report,
+            "checkpoints": [_serialize_checkpoint(cp) for cp in session.checkpoints],
             "metadata": {
                 "session_id": session.metadata.session_id,
                 "created_at": session.metadata.created_at,
@@ -297,6 +515,13 @@ def save_session(session: SessionData, force_full: bool = False) -> None:
                 "last_message": session.metadata.last_message,
                 "message_count": session.metadata.message_count,
                 "workspace": session.metadata.workspace,
+                "runtime_summary": session.metadata.runtime_summary,
+                "checkpoint_count": session.metadata.checkpoint_count,
+                "instruction_summary": session.metadata.instruction_summary,
+                "hook_summary": session.metadata.hook_summary,
+                "delegation_summary": session.metadata.delegation_summary,
+                "extension_summary": session.metadata.extension_summary,
+                "readiness_summary": session.metadata.readiness_summary,
             },
         }
         session_path.write_text(
@@ -307,6 +532,7 @@ def save_session(session: SessionData, force_full: bool = False) -> None:
         # Reset delta tracking
         session._last_saved_msg_count = len(session.messages)
         session._last_saved_transcript_count = len(session.transcript_entries)
+        session._last_saved_checkpoint_count = len(session.checkpoints)
         session._last_full_save_hash = session._compute_content_hash()
         
         # Consolidate and clean up delta files
@@ -349,6 +575,17 @@ def load_session(session_id: str) -> SessionData | None:
             permissions_summary=data.get("permissions_summary", {}),
             skills=data.get("skills", []),
             mcp_servers=data.get("mcp_servers", []),
+            instruction_layers=data.get("instruction_layers", []),
+            hook_status=data.get("hook_status", {}),
+            delegated_tasks=data.get("delegated_tasks", []),
+            delegation_status=data.get("delegation_status", {}),
+            extension_manifests=data.get("extension_manifests", []),
+            readiness_report=data.get("readiness_report", {}),
+            checkpoints=[
+                _deserialize_checkpoint(item)
+                for item in data.get("checkpoints", [])
+                if isinstance(item, dict)
+            ],
             metadata=metadata,
         )
         
@@ -380,6 +617,19 @@ def load_session(session_id: str) -> SessionData | None:
                         elif t_offset + len(delta["transcripts"]) > len(session.transcript_entries):
                             overlap = len(session.transcript_entries) - t_offset
                             session.transcript_entries.extend(delta["transcripts"][overlap:])
+
+                    if "checkpoints" in delta:
+                        c_offset = delta.get("checkpoint_offset", len(session.checkpoints))
+                        parsed = [
+                            _deserialize_checkpoint(item)
+                            for item in delta["checkpoints"]
+                            if isinstance(item, dict)
+                        ]
+                        if c_offset >= len(session.checkpoints):
+                            session.checkpoints.extend(parsed)
+                        elif c_offset + len(parsed) > len(session.checkpoints):
+                            overlap = len(session.checkpoints) - c_offset
+                            session.checkpoints.extend(parsed[overlap:])
                     
                     session._delta_save_count += 1
                 except (json.JSONDecodeError, KeyError, TypeError):
@@ -389,6 +639,7 @@ def load_session(session_id: str) -> SessionData | None:
         # Update tracking counters
         session._last_saved_msg_count = len(session.messages)
         session._last_saved_transcript_count = len(session.transcript_entries)
+        session._last_saved_checkpoint_count = len(session.checkpoints)
         session._last_full_save_hash = session._compute_content_hash()
         
         return session
@@ -462,6 +713,179 @@ def get_latest_session(workspace: str | None = None) -> SessionData | None:
         if workspace is None or meta.workspace == workspace:
             return load_session(meta.session_id)
     return None
+
+
+def create_file_checkpoint(
+    session: SessionData | None,
+    *,
+    file_path: str,
+    existed: bool,
+    previous_content: str,
+) -> FileCheckpoint | None:
+    """Record a durable rewind snapshot before a file mutation."""
+    if session is None:
+        return None
+
+    checkpoint = FileCheckpoint(
+        checkpoint_id=uuid.uuid4().hex[:12],
+        created_at=time.time(),
+        file_path=file_path,
+        existed=existed,
+        previous_content=previous_content,
+    )
+    session.checkpoints.append(checkpoint)
+    save_session(session, force_full=False)
+    return checkpoint
+
+
+def _select_checkpoints_to_rewind(
+    session: SessionData,
+    *,
+    steps: int = 1,
+    checkpoint_id: str | None = None,
+) -> list[FileCheckpoint]:
+    if not session.checkpoints:
+        return []
+    if checkpoint_id:
+        for index in range(len(session.checkpoints) - 1, -1, -1):
+            checkpoint = session.checkpoints[index]
+            if checkpoint.checkpoint_id == checkpoint_id:
+                group_id = checkpoint.group_id
+                if group_id:
+                    while index > 0 and session.checkpoints[index - 1].group_id == group_id:
+                        index -= 1
+                return session.checkpoints[index:]
+        return []
+    if steps <= 0:
+        return []
+    start_index = max(len(session.checkpoints) - steps, 0)
+    tail_group_id = session.checkpoints[-1].group_id
+    if tail_group_id:
+        group_start = len(session.checkpoints) - 1
+        while group_start > 0 and session.checkpoints[group_start - 1].group_id == tail_group_id:
+            group_start -= 1
+        start_index = min(start_index, group_start)
+    return session.checkpoints[start_index:]
+
+
+def rewind_session_data(
+    session: SessionData,
+    *,
+    steps: int = 1,
+    checkpoint_id: str | None = None,
+) -> list[FileCheckpoint]:
+    """Restore checkpoints against an in-memory session and persist the result."""
+    selected = _select_checkpoints_to_rewind(
+        session,
+        steps=steps,
+        checkpoint_id=checkpoint_id,
+    )
+    if not selected:
+        return []
+
+    rewind_group_id = uuid.uuid4().hex[:12]
+    rewind_created_at = time.time()
+    reverse_checkpoints: list[FileCheckpoint] = []
+    captured_paths: set[str] = set()
+    for checkpoint in reversed(selected):
+        if checkpoint.file_path in captured_paths:
+            continue
+        target = Path(checkpoint.file_path)
+        existed = target.exists()
+        previous_content = target.read_text(encoding="utf-8") if existed else ""
+        reverse_checkpoints.append(
+            FileCheckpoint(
+                checkpoint_id=uuid.uuid4().hex[:12],
+                created_at=rewind_created_at,
+                file_path=checkpoint.file_path,
+                existed=existed,
+                previous_content=previous_content,
+                kind="rewind",
+                group_id=rewind_group_id,
+            )
+        )
+        captured_paths.add(checkpoint.file_path)
+
+    for checkpoint in reversed(selected):
+        target = Path(checkpoint.file_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if checkpoint.existed:
+            target.write_text(checkpoint.previous_content, encoding="utf-8")
+        elif target.exists():
+            target.unlink()
+
+    del session.checkpoints[-len(selected):]
+    session.checkpoints.extend(reverse_checkpoints)
+    save_session(session, force_full=True)
+    return selected
+
+
+def rewind_session(
+    session_id: str,
+    *,
+    steps: int = 1,
+    checkpoint_id: str | None = None,
+) -> tuple[SessionData | None, list[FileCheckpoint]]:
+    """Restore the latest checkpointed file edits for a saved session."""
+    session = load_session(session_id)
+    if session is None:
+        return session, []
+
+    selected = rewind_session_data(
+        session,
+        steps=steps,
+        checkpoint_id=checkpoint_id,
+    )
+    return session, selected
+
+
+def format_rewind_preview(
+    session: SessionData,
+    *,
+    steps: int = 1,
+    checkpoint_id: str | None = None,
+) -> str:
+    """Format a dry-run view of which checkpoints a rewind would restore."""
+    selected = _select_checkpoints_to_rewind(
+        session,
+        steps=steps,
+        checkpoint_id=checkpoint_id,
+    )
+    if not selected:
+        return f"No checkpoints available to rewind for session {session.session_id[:8]}."
+
+    unique_files: list[str] = []
+    seen_paths: set[str] = set()
+    for checkpoint in reversed(selected):
+        if checkpoint.file_path not in seen_paths:
+            unique_files.append(checkpoint.file_path)
+            seen_paths.add(checkpoint.file_path)
+
+    lines = [
+        f"Rewind preview for session {session.session_id[:8]}:",
+        "",
+        f"Would restore {len(selected)} checkpoint(s) across {len(unique_files)} file(s).",
+    ]
+    if checkpoint_id:
+        lines.append(f"Target checkpoint: {checkpoint_id[:8]}")
+
+    if any(checkpoint.kind == "rewind" for checkpoint in selected):
+        lines.append("Mode: undo prior rewind safety checkpoints.")
+    else:
+        lines.append("Mode: restore pre-edit file snapshots.")
+
+    lines.extend(["", "Planned restores:"])
+    for index, checkpoint in enumerate(reversed(selected), 1):
+        created = _fmt_ts(checkpoint.created_at, "%Y-%m-%d %H:%M:%S")
+        status = "existing file" if checkpoint.existed else "new file"
+        checkpoint_type = _format_checkpoint_type(checkpoint)
+        lines.append(
+            f"  {index}. [{checkpoint.checkpoint_id[:8]}] {created} - {checkpoint.file_path}"
+        )
+        lines.append(f"     Restores: {status}")
+        lines.append(f"     Type: {checkpoint_type}")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +964,10 @@ def format_session_list(sessions: list[SessionMetadata]) -> str:
             f"  {i}. [{meta.session_id[:8]}] {created} - {workspace}"
         )
         lines.append(f"     Messages: {count} | First: {first_msg}")
+        if meta.checkpoint_count:
+            lines.append(f"     Checkpoints: {meta.checkpoint_count}")
+        if meta.runtime_summary:
+            lines.append(f"     Runtime: {meta.runtime_summary}")
         lines.append("")
 
     lines.append(f"Total: {len(sessions)} session(s)")
@@ -556,4 +984,387 @@ def format_session_resume(session: SessionData) -> str:
         f"  Updated: {updated}\n"
         f"  Messages: {len(session.messages)}\n"
         f"  Workspace: {session.workspace}"
+        + (
+            f"\n  Checkpoints: {session.metadata.checkpoint_count}"
+            if session.metadata.checkpoint_count
+            else ""
+        )
+        + (
+            f"\n  Recent checkpoints: {_format_checkpoint_summary_details(session)}"
+            if session.metadata.checkpoint_count
+            else ""
+        )
+        + (
+            f"\n  Runtime: {session.metadata.runtime_summary}"
+            if session.metadata.runtime_summary
+            else ""
+        )
+        + (
+            f"\n  Readiness: {session.metadata.readiness_summary}"
+            if session.metadata.readiness_summary
+            else ""
+        )
+        + (
+            f"\n  Instructions: {session.metadata.instruction_summary}"
+            if session.metadata.instruction_summary
+            else ""
+        )
+        + (
+            f"\n  Hooks: {session.metadata.hook_summary}"
+            if session.metadata.hook_summary
+            else ""
+        )
+        + (
+            f"\n  Delegation: {session.metadata.delegation_summary}"
+            if session.metadata.delegation_summary
+            else ""
+        )
+        + (
+            f"\n  Extensions: {session.metadata.extension_summary}"
+            if session.metadata.extension_summary
+            else ""
+        )
     )
+
+
+def _session_entry_preview(text: str, *, limit: int = 96) -> str:
+    normalized = " ".join((text or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def _session_transcript_label(entry: dict[str, Any]) -> str:
+    kind = str(entry.get("kind", "entry") or "entry")
+    if entry.get("category") == "runtime":
+        runtime_kind = str(entry.get("runtimeKind", "") or "").strip()
+        return f"runtime:{runtime_kind}" if runtime_kind else "runtime"
+    if kind == "tool":
+        tool_name = str(entry.get("toolName", "") or "").strip()
+        status = str(entry.get("status", "") or "").strip()
+        if tool_name and status:
+            return f"tool:{tool_name}/{status}"
+        if tool_name:
+            return f"tool:{tool_name}"
+    return kind
+
+
+def _format_recent_transcript_lines(
+    session: SessionData,
+    *,
+    limit: int = 8,
+) -> list[str]:
+    if not session.transcript_entries:
+        return ["  (none)"]
+
+    lines: list[str] = []
+    recent_entries = session.transcript_entries[-limit:]
+    for entry in recent_entries:
+        label = _session_transcript_label(entry)
+        preview = _session_entry_preview(str(entry.get("body", "") or "(empty)"))
+        lines.append(f"  - [{label}] {preview}")
+    return lines
+
+
+def _format_recent_history_lines(
+    session: SessionData,
+    *,
+    limit: int = 8,
+) -> list[str]:
+    if not session.history:
+        return ["  (none)"]
+
+    return [
+        f"  {index}. {_session_entry_preview(item)}"
+        for index, item in enumerate(session.history[-limit:], 1)
+    ]
+
+
+def _format_instruction_layer_lines(
+    session: SessionData,
+    *,
+    limit: int = 6,
+) -> list[str]:
+    if not session.instruction_layers:
+        return ["  (none)"]
+    lines: list[str] = []
+    for layer in session.instruction_layers[:limit]:
+        name = _safe_text(layer.get("name")) or "layer"
+        scope = _safe_text(layer.get("scope")) or "unknown"
+        kind = _safe_text(layer.get("kind")) or "instruction"
+        preview = _safe_text(layer.get("preview")) or "(no preview)"
+        exists = "present" if layer.get("exists") else "missing"
+        lines.append(f"  - {name} [{scope}/{kind}, {exists}] {preview}")
+    if len(session.instruction_layers) > limit:
+        lines.append(f"  ... {len(session.instruction_layers) - limit} more layer(s)")
+    return lines
+
+
+def _format_hook_status_lines(session: SessionData) -> list[str]:
+    if not session.hook_status:
+        return ["  (none)"]
+    status = session.hook_status
+    lines = [
+        "  "
+        + (
+            _safe_text(status.get("summary"))
+            or f"{status.get('enabled_hooks', 0)}/{status.get('total_hooks', 0)} hook(s) enabled"
+        )
+    ]
+    hooks = status.get("hooks")
+    if isinstance(hooks, list):
+        for hook in hooks[:5]:
+            lines.append(
+                f"  - {hook.get('event', 'hook')} :: {hook.get('last_status', 'idle')}"
+                f", calls={hook.get('call_count', 0)}, failures={hook.get('failure_count', 0)}"
+            )
+    return lines
+
+
+def _format_delegation_lines(session: SessionData) -> list[str]:
+    summary = session.metadata.delegation_summary or _summarize_delegation_status(
+        session.delegation_status
+    )
+    lines = [f"  {summary}"] if summary else []
+    if not session.delegated_tasks:
+        return lines or ["  (none)"]
+    for task in session.delegated_tasks[:5]:
+        label = _safe_text(task.get("label") or task.get("task_id") or task.get("id")) or "task"
+        status = _safe_text(task.get("status")) or "running"
+        lines.append(f"  - {label} :: {status}")
+    return lines
+
+
+def _format_extension_lines(
+    session: SessionData,
+    *,
+    limit: int = 6,
+) -> list[str]:
+    if not session.extension_manifests:
+        return ["  (none)"]
+    lines: list[str] = []
+    for manifest in session.extension_manifests[:limit]:
+        name = _safe_text(manifest.get("name")) or "extension"
+        scope = _safe_text(manifest.get("scope")) or "unknown"
+        version = _safe_text(manifest.get("version")) or "unversioned"
+        enabled = "enabled" if manifest.get("enabled", True) else "disabled"
+        description = _safe_text(manifest.get("description")) or "(no description)"
+        lines.append(f"  - {name} [{scope}] {version}, {enabled} :: {description}")
+    if len(session.extension_manifests) > limit:
+        lines.append(
+            f"  ... {len(session.extension_manifests) - limit} more extension(s)"
+        )
+    return lines
+
+
+def _format_readiness_lines(session: SessionData) -> list[str]:
+    if not session.readiness_report:
+        return ["  (none)"]
+    report = session.readiness_report
+    provider = _safe_text(report.get("provider")) or "unknown-provider"
+    provider_channel = _safe_text(report.get("provider_channel")) or ""
+    status = _safe_text(report.get("status")) or "unknown"
+    provider_ready = "ready" if report.get("provider_ready") else "not-ready"
+    fallback_candidates = list(report.get("fallback_candidates", []) or [])
+    viable_fallbacks = set(str(item) for item in list(report.get("viable_fallbacks", []) or []))
+    lines = [f"  {status} via {provider} ({provider_ready})"]
+    if provider_channel:
+        lines.append(f"  channel: {provider_channel}")
+    if fallback_candidates:
+        lines.append(
+            f"  fallback coverage: {len(viable_fallbacks)}/{len(fallback_candidates)} locally ready"
+        )
+        for candidate in fallback_candidates[:5]:
+            label = "ready" if str(candidate) in viable_fallbacks else "not-ready"
+            lines.append(f"  - fallback {candidate} [{label}]")
+    guidance = report.get("fallback_guidance")
+    if isinstance(guidance, list) and guidance:
+        for item in guidance[:3]:
+            lines.append(f"  - guidance: {item}")
+    issues = report.get("issues")
+    if isinstance(issues, list) and issues:
+        for issue in issues[:5]:
+            lines.append(f"  - {issue}")
+    return lines
+
+
+def _format_checkpoint_summary_details(
+    session: SessionData,
+    *,
+    limit: int = 3,
+) -> str:
+    if not session.checkpoints:
+        return "none"
+
+    items: list[str] = []
+    for checkpoint in reversed(session.checkpoints[-limit:]):
+        file_name = Path(checkpoint.file_path).name or checkpoint.file_path
+        label = " [rewind]" if getattr(checkpoint, "kind", "edit") == "rewind" else ""
+        items.append(f"[{checkpoint.checkpoint_id[:8]}] {file_name}{label}")
+    return f"{len(session.checkpoints)} saved; latest " + ", ".join(items)
+
+
+def _format_checkpoint_type(checkpoint: FileCheckpoint) -> str:
+    if getattr(checkpoint, "kind", "edit") == "rewind":
+        return "rewind safety"
+    return "edit"
+
+
+def format_checkpoint_summary_line(
+    session: SessionData | None,
+    *,
+    limit: int = 3,
+) -> str:
+    """Format a compact checkpoint summary for TUI and transcript surfaces."""
+    if not session or not session.checkpoints:
+        return ""
+    return f"checkpoint-summary: {_format_checkpoint_summary_details(session, limit=limit)}"
+
+
+def format_session_inspect(
+    session: SessionData,
+    *,
+    transcript_limit: int = 8,
+) -> str:
+    """Format a detailed session inspection view for CLI/session replay."""
+    created = _fmt_ts(session.created_at, "%Y-%m-%d %H:%M:%S")
+    updated = _fmt_ts(session.updated_at, "%Y-%m-%d %H:%M:%S")
+    skills = _format_named_collection(session.skills)
+    mcp_servers = _format_named_collection(session.mcp_servers)
+
+    lines = [
+        f"Session inspect: {session.session_id[:8]}",
+        f"  Created: {created}",
+        f"  Updated: {updated}",
+        f"  Workspace: {session.workspace}",
+        f"  Messages: {len(session.messages)}",
+        f"  Transcript entries: {len(session.transcript_entries)}",
+        f"  History entries: {len(session.history)}",
+        f"  Skills: {skills}",
+        f"  MCP servers: {mcp_servers}",
+        f"  Checkpoints: {session.metadata.checkpoint_count}",
+    ]
+    if session.metadata.runtime_summary:
+        lines.append(f"  Runtime: {session.metadata.runtime_summary}")
+    if session.metadata.readiness_summary:
+        lines.append(f"  Readiness: {session.metadata.readiness_summary}")
+    if session.metadata.instruction_summary:
+        lines.append(f"  Instructions: {session.metadata.instruction_summary}")
+    if session.metadata.hook_summary:
+        lines.append(f"  Hooks: {session.metadata.hook_summary}")
+    if session.metadata.delegation_summary:
+        lines.append(f"  Delegation: {session.metadata.delegation_summary}")
+    if session.metadata.extension_summary:
+        lines.append(f"  Extensions: {session.metadata.extension_summary}")
+
+    lines.extend(
+        [
+            "",
+            f"Recent checkpoints: {_format_checkpoint_summary_details(session)}"
+            if session.checkpoints
+            else "Recent checkpoints: none",
+            "",
+            "Instruction layers:",
+            *_format_instruction_layer_lines(session),
+            "",
+            "Hook surface:",
+            *_format_hook_status_lines(session),
+            "",
+            "Delegation surface:",
+            *_format_delegation_lines(session),
+            "",
+            "Extensions:",
+            *_format_extension_lines(session),
+            "",
+            "Readiness:",
+            *_format_readiness_lines(session),
+            "",
+            f"Recent transcript ({min(len(session.transcript_entries), transcript_limit)} shown):",
+            *_format_recent_transcript_lines(session, limit=transcript_limit),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_session_replay(
+    session: SessionData,
+    *,
+    transcript_limit: int = 16,
+    history_limit: int = 8,
+    checkpoint_limit: int = 5,
+) -> str:
+    """Format a replay-oriented historical view for a session."""
+    created = _fmt_ts(session.created_at, "%Y-%m-%d %H:%M:%S")
+    updated = _fmt_ts(session.updated_at, "%Y-%m-%d %H:%M:%S")
+    lines = [
+        f"Session replay: {session.session_id[:8]}",
+        f"  Workspace: {session.workspace}",
+        f"  Created: {created}",
+        f"  Updated: {updated}",
+        f"  Runtime: {session.metadata.runtime_summary or '(none)'}",
+        f"  Checkpoints: {session.metadata.checkpoint_count}",
+    ]
+    if session.metadata.readiness_summary:
+        lines.append(f"  Readiness: {session.metadata.readiness_summary}")
+        readiness_details = _format_readiness_lines(session)
+        if readiness_details and readiness_details != ["  (none)"]:
+            lines.extend(readiness_details[1:])
+    if session.metadata.delegation_summary:
+        lines.append(f"  Delegation: {session.metadata.delegation_summary}")
+    lines.extend(
+        [
+            "",
+            f"Checkpoint trail ({min(len(session.checkpoints), checkpoint_limit)} shown):",
+        ]
+    )
+    if session.checkpoints:
+        for checkpoint in reversed(session.checkpoints[-checkpoint_limit:]):
+            created_at = _fmt_ts(checkpoint.created_at, "%Y-%m-%d %H:%M:%S")
+            file_name = Path(checkpoint.file_path).name or checkpoint.file_path
+            checkpoint_type = _format_checkpoint_type(checkpoint)
+            lines.append(
+                f"  - [{checkpoint.checkpoint_id[:8]}] {created_at} :: {file_name} ({checkpoint_type})"
+            )
+    else:
+        lines.append("  (none)")
+
+    lines.extend(
+        [
+            "",
+            "Instruction layers:",
+            *_format_instruction_layer_lines(session, limit=4),
+            "",
+            "Extensions:",
+            *_format_extension_lines(session, limit=4),
+            "",
+            f"Prompt history ({min(len(session.history), history_limit)} shown):",
+            *_format_recent_history_lines(session, limit=history_limit),
+            "",
+            f"Transcript timeline ({min(len(session.transcript_entries), transcript_limit)} shown):",
+            *_format_recent_transcript_lines(session, limit=transcript_limit),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_session_checkpoints(session: SessionData) -> str:
+    """Format rewind checkpoints for inspection."""
+    if not session.checkpoints:
+        return f"No checkpoints saved for session {session.session_id[:8]}."
+
+    lines = [
+        f"Checkpoints for session {session.session_id[:8]}:",
+        "",
+    ]
+    for index, checkpoint in enumerate(reversed(session.checkpoints), 1):
+        created = _fmt_ts(checkpoint.created_at, "%Y-%m-%d %H:%M:%S")
+        status = "existing file" if checkpoint.existed else "new file"
+        checkpoint_type = _format_checkpoint_type(checkpoint)
+        lines.append(
+            f"  {index}. [{checkpoint.checkpoint_id[:8]}] {created} - {checkpoint.file_path}"
+        )
+        lines.append(f"     Restores: {status}")
+        lines.append(f"     Type: {checkpoint_type}")
+    lines.append("")
+    lines.append(f"Total: {len(session.checkpoints)} checkpoint(s)")
+    return "\n".join(lines)
