@@ -3,6 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from minicode.prompt_pipeline import PromptPipeline, read_file_cached
+from minicode.product_surfaces import (
+    DelegationStatus,
+    HookStatus,
+    PromptBundle,
+    ReadinessReport,
+    build_product_snapshot,
+)
 
 
 def _maybe_read(path: Path) -> str | None:
@@ -86,11 +93,11 @@ Audit 3: business/src/ single sink + Package DAG
 - Vendor only imported by port_entry/"""
 
 
-def build_system_prompt(
+def build_system_prompt_bundle(
     cwd: str,
     permission_summary: list[str] | None = None,
     extras: dict | None = None,
-) -> str:
+) -> PromptBundle:
     """Build the system prompt using dynamic paragraph assembly.
 
     Implements cache boundaries:
@@ -105,6 +112,8 @@ def build_system_prompt(
     cwd_path = Path(cwd)
     permission_summary = permission_summary or []
     extras = extras or {}
+    runtime = extras.get("runtime")
+    product_snapshot = build_product_snapshot(cwd, runtime=runtime)
 
     pipeline = PromptPipeline()
 
@@ -239,6 +248,66 @@ def build_system_prompt(
             cache_ttl=30.0,
         )
 
+    instruction_summary = str(product_snapshot.get("instruction_summary") or "").strip()
+    if instruction_summary:
+        pipeline.register_dynamic(
+            "instructions",
+            lambda: (
+                "## Instruction Layers\n"
+                "Follow these active instruction layers in precedence order before inventing new behavior.\n"
+                f"{instruction_summary}"
+            ),
+            cache_ttl=60.0,
+        )
+
+    hook_summary = str(product_snapshot.get("hook_summary") or "").strip()
+    if hook_summary:
+        pipeline.register_dynamic(
+            "hooks",
+            lambda: (
+                "## Hook Runtime\n"
+                "Local automation hooks may run around tools, session saves, and runtime transitions.\n"
+                f"{hook_summary}"
+            ),
+            cache_ttl=60.0,
+        )
+
+    delegation_summary = str(product_snapshot.get("delegation_summary") or "").strip()
+    if delegation_summary:
+        pipeline.register_dynamic(
+            "delegation",
+            lambda: (
+                "## Delegation Runtime\n"
+                "Background tasks and delegated work share local slots with this session.\n"
+                f"{delegation_summary}"
+            ),
+            cache_ttl=30.0,
+        )
+
+    extension_summary = str(product_snapshot.get("extension_summary") or "").strip()
+    if extension_summary:
+        pipeline.register_dynamic(
+            "extensions",
+            lambda: (
+                "## Extensions\n"
+                "Treat discovered local extensions as optional product-surface integrations.\n"
+                f"{extension_summary}"
+            ),
+            cache_ttl=120.0,
+        )
+
+    readiness_summary = str(product_snapshot.get("readiness_summary") or "").strip()
+    if readiness_summary:
+        pipeline.register_dynamic(
+            "readiness",
+            lambda: (
+                "## Runtime Readiness\n"
+                "Prefer resilient execution and surface readiness blockers clearly when provider/runtime conditions are degraded.\n"
+                f"{readiness_summary}"
+            ),
+            cache_ttl=30.0,
+        )
+
     # Global CLAUDE.md (file-cached)
     global_claude_md = _maybe_read(Path.home() / ".claude" / "CLAUDE.md")
     if global_claude_md:
@@ -257,4 +326,29 @@ def build_system_prompt(
             cache_ttl=300.0,
         )
 
-    return pipeline.build()
+    instruction_layers = product_snapshot.get("instruction_layers", [])
+    hook_status = HookStatus(**product_snapshot.get("hook_status", {}))
+    delegation_status = DelegationStatus(**product_snapshot.get("delegation_status", {}))
+    extension_manifests = product_snapshot.get("extension_manifests", [])
+    readiness_report = ReadinessReport(**product_snapshot.get("readiness_report", {}))
+
+    return PromptBundle(
+        prompt=pipeline.build(),
+        instruction_layers=instruction_layers,
+        instruction_summary=instruction_summary,
+        hook_status=hook_status,
+        delegation_status=delegation_status,
+        extension_manifests=extension_manifests,
+        extension_summary=extension_summary,
+        readiness_report=readiness_report,
+        readiness_summary=readiness_summary,
+        product_snapshot=product_snapshot,
+    )
+
+
+def build_system_prompt(
+    cwd: str,
+    permission_summary: list[str] | None = None,
+    extras: dict | None = None,
+) -> str:
+    return build_system_prompt_bundle(cwd, permission_summary, extras).prompt

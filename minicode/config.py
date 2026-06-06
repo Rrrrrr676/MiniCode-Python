@@ -13,12 +13,24 @@ MINI_CODE_HISTORY_PATH = MINI_CODE_DIR / "history.json"
 MINI_CODE_PERMISSIONS_PATH = MINI_CODE_DIR / "permissions.json"
 MINI_CODE_MCP_PATH = MINI_CODE_DIR / "mcp.json"
 MINI_CODE_USER_PROFILE_PATH = MINI_CODE_DIR / "USER.md"
+MINI_CODE_MANAGED_POLICY_PATH = MINI_CODE_DIR / "MANAGED.md"
+MINI_CODE_EXTENSIONS_DIR = MINI_CODE_DIR / "extensions"
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 
 def project_user_profile_path(cwd: str | Path | None = None) -> Path:
     """Return the project-level USER.md path."""
     return Path(cwd or Path.cwd()) / ".mini-code" / "USER.md"
+
+
+def project_managed_policy_path(cwd: str | Path | None = None) -> Path:
+    """Return the project-level MANAGED.md path."""
+    return Path(cwd or Path.cwd()) / ".mini-code" / "MANAGED.md"
+
+
+def project_extensions_dir(cwd: str | Path | None = None) -> Path:
+    """Return the project-level extensions directory."""
+    return Path(cwd or Path.cwd()) / ".mini-code" / "extensions"
 
 # 已知的合法模型名称（用于拼写检查提示）
 KNOWN_MODELS = [
@@ -45,6 +57,244 @@ KNOWN_MODELS = [
     "qwen/qwen3-235b-a22b",
     "minimax/minimax-m1",
 ]
+
+
+def _coerce_model_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        return []
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def configured_model_fallbacks(
+    runtime: dict[str, Any] | None,
+    provider_name: str | None = None,
+) -> list[str]:
+    runtime = runtime or {}
+    candidates = _coerce_model_list(runtime.get("fallbackModels"))
+    provider_key = (provider_name or "").strip().lower()
+    provider_specific_keys = {
+        "anthropic": "anthropicFallbackModels",
+        "openai": "openaiFallbackModels",
+        "openrouter": "openrouterFallbackModels",
+        "custom": "customFallbackModels",
+    }
+    if provider_key in provider_specific_keys:
+        candidates.extend(_coerce_model_list(runtime.get(provider_specific_keys[provider_key])))
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        ordered.append(candidate)
+    return ordered
+
+
+def default_model_fallbacks(
+    runtime: dict[str, Any] | None,
+    provider_name: str | None = None,
+    current_model: str | None = None,
+) -> list[str]:
+    runtime = runtime or {}
+    provider_key = (provider_name or "").strip().lower()
+    active_model = str(current_model or runtime.get("model", "")).strip()
+    candidates: list[str] = []
+
+    has_openai = bool(runtime.get("openaiApiKey")) and _is_valid_http_url(runtime.get("openaiBaseUrl"))
+    has_openrouter = bool(runtime.get("openrouterApiKey")) and _is_valid_http_url(runtime.get("openrouterBaseUrl"))
+
+    if provider_key == "anthropic":
+        sonnet_default = str(runtime.get("anthropicDefaultSonnetModel") or "claude-sonnet-4-20250514").strip()
+        haiku_default = str(runtime.get("anthropicDefaultHaikuModel") or "claude-haiku-3-20240307").strip()
+        if active_model == "claude-opus-4-20250514":
+            candidates.extend([sonnet_default, haiku_default])
+        elif active_model == "claude-haiku-3-20240307":
+            candidates.append(sonnet_default)
+        elif active_model.startswith("claude-"):
+            candidates.append(haiku_default)
+        else:
+            if has_openai:
+                candidates.extend(["gpt-4o", "gpt-4o-mini"])
+            if has_openrouter:
+                candidates.append("openrouter/auto")
+    elif provider_key == "openai":
+        if active_model == "gpt-4o-mini":
+            candidates.append("gpt-4o")
+        elif active_model == "gpt-4o":
+            candidates.append("gpt-4o-mini")
+        else:
+            candidates.extend(["gpt-4o", "gpt-4o-mini"])
+        if has_openrouter:
+            candidates.append("openrouter/auto")
+    elif provider_key == "openrouter":
+        candidates.append("openrouter/auto")
+        if has_openai:
+            candidates.append("gpt-4o-mini")
+    elif provider_key == "custom":
+        if has_openai:
+            candidates.extend(["gpt-4o", "gpt-4o-mini"])
+        elif has_openrouter:
+            candidates.append("openrouter/auto")
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = str(candidate or "").strip()
+        if not normalized or normalized == active_model or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def effective_model_fallbacks(
+    runtime: dict[str, Any] | None,
+    provider_name: str | None = None,
+    current_model: str | None = None,
+) -> list[str]:
+    runtime = runtime or {}
+    active_model = str(current_model or runtime.get("model", "")).strip()
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for candidate in [
+        *configured_model_fallbacks(runtime, provider_name),
+        *default_model_fallbacks(runtime, provider_name, current_model=active_model),
+    ]:
+        normalized = str(candidate or "").strip()
+        if not normalized or normalized == active_model or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def describe_provider_channel(
+    runtime: dict[str, Any] | None,
+    provider_name: str | None = None,
+) -> str:
+    runtime = runtime or {}
+    provider_key = (provider_name or "").strip().lower()
+    if not provider_key:
+        from minicode.model_registry import detect_provider
+
+        provider_key = detect_provider(
+            str(runtime.get("model", "")).strip(),
+            runtime,
+        ).value
+
+    if provider_key == "anthropic":
+        has_base = _is_valid_http_url(runtime.get("baseUrl"))
+        has_token = bool(runtime.get("authToken"))
+        has_key = bool(runtime.get("apiKey"))
+        if has_base and has_token and has_key:
+            return "anthropic-compatible via baseUrl/authToken (+ apiKey)"
+        if has_base and has_token:
+            return "anthropic-compatible via baseUrl/authToken"
+        if has_key:
+            return "anthropic via apiKey"
+        return "anthropic channel not configured"
+
+    if provider_key == "openai":
+        if runtime.get("openaiApiKey") and _is_valid_http_url(runtime.get("openaiBaseUrl")):
+            return "openai via openaiApiKey/openaiBaseUrl"
+        return "openai channel not configured"
+
+    if provider_key == "openrouter":
+        if runtime.get("openrouterApiKey") and _is_valid_http_url(runtime.get("openrouterBaseUrl")):
+            return "openrouter via openrouterApiKey/openrouterBaseUrl"
+        return "openrouter channel not configured"
+
+    if provider_key == "custom":
+        if runtime.get("customApiKey") and _is_valid_http_url(runtime.get("customBaseUrl")):
+            return "custom via customApiKey/customBaseUrl"
+        return "custom channel not configured"
+
+    return f"{provider_key or 'unknown'} channel"
+
+
+def describe_fallback_guidance(
+    runtime: dict[str, Any] | None,
+    provider_name: str | None = None,
+    current_model: str | None = None,
+) -> list[str]:
+    runtime = runtime or {}
+    provider_key = (provider_name or "").strip().lower()
+    if not provider_key:
+        from minicode.model_registry import detect_provider
+
+        provider_key = detect_provider(
+            str(current_model or runtime.get("model", "")).strip(),
+            runtime,
+        ).value
+
+    active_model = str(current_model or runtime.get("model", "")).strip()
+    configured = configured_model_fallbacks(runtime, provider_key)
+    defaults = default_model_fallbacks(runtime, provider_key, current_model=active_model)
+    guidance: list[str] = []
+
+    if (
+        provider_key == "anthropic"
+        and bool(runtime.get("authToken"))
+        and _is_valid_http_url(runtime.get("baseUrl"))
+        and not runtime.get("apiKey")
+    ):
+        guidance.append(
+            "Primary runtime is using a single anthropic-compatible channel from baseUrl/authToken."
+        )
+
+    if not configured:
+        provider_specific_key = {
+            "anthropic": "anthropicFallbackModels",
+            "openai": "openaiFallbackModels",
+            "openrouter": "openrouterFallbackModels",
+            "custom": "customFallbackModels",
+        }.get(provider_key, "fallbackModels")
+        guidance.append(
+            f"Add fallbackModels or {provider_specific_key} to enable model failover."
+        )
+
+    if provider_key in {"anthropic", "custom"}:
+        if not runtime.get("openaiApiKey") and not runtime.get("openrouterApiKey") and not runtime.get("customApiKey"):
+            guidance.append(
+                "No local fallback credentials are configured for OpenAI, OpenRouter, or custom providers."
+            )
+    elif provider_key == "openai":
+        if not runtime.get("openrouterApiKey") and not runtime.get("customApiKey"):
+            guidance.append(
+                "No local fallback credentials are configured for OpenRouter or custom providers."
+            )
+    elif provider_key == "openrouter":
+        if not runtime.get("openaiApiKey") and not runtime.get("customApiKey"):
+            guidance.append(
+                "No local fallback credentials are configured for OpenAI or custom providers."
+            )
+
+    if defaults and not configured:
+        guidance.append(
+            "Default failover can activate only when the matching provider credentials are locally configured."
+        )
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in guidance:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
 
 
 def _suggest_model_name(typed: str) -> str:
@@ -206,6 +456,10 @@ def load_runtime_config(cwd: str | Path | None = None) -> dict[str, Any]:
     # --- User profile paths ---
     global_user_profile = MINI_CODE_USER_PROFILE_PATH
     proj_user_profile = project_user_profile_path(cwd)
+    global_managed_policy = MINI_CODE_MANAGED_POLICY_PATH
+    proj_managed_policy = project_managed_policy_path(cwd)
+    global_extensions = MINI_CODE_EXTENSIONS_DIR
+    proj_extensions = project_extensions_dir(cwd)
 
     # --- User preferences from settings (lightweight, not from USER.md) ---
     user_preferences = effective.get("userPreferences", {})
@@ -217,12 +471,50 @@ def load_runtime_config(cwd: str | Path | None = None) -> dict[str, Any]:
         str(env.get("MINI_CODE_VERBOSITY", "")).strip()
         or user_preferences.get("verbosity", "")
     )
+    fallback_models = _coerce_model_list(
+        os.environ.get("MINI_CODE_MODEL_FALLBACKS", "")
+        or effective.get("fallbackModels", [])
+    )
+    anthropic_fallback_models = _coerce_model_list(
+        os.environ.get("ANTHROPIC_MODEL_FALLBACKS", "")
+        or effective.get("anthropicFallbackModels", [])
+    )
+    openai_fallback_models = _coerce_model_list(
+        os.environ.get("OPENAI_MODEL_FALLBACKS", "")
+        or effective.get("openaiFallbackModels", [])
+    )
+    openrouter_fallback_models = _coerce_model_list(
+        os.environ.get("OPENROUTER_MODEL_FALLBACKS", "")
+        or effective.get("openrouterFallbackModels", [])
+    )
+    custom_fallback_models = _coerce_model_list(
+        os.environ.get("CUSTOM_MODEL_FALLBACKS", "")
+        or effective.get("customFallbackModels", [])
+    )
 
     return {
         "model": model,
         "baseUrl": base_url,
         "authToken": auth_token,
         "apiKey": api_key,
+        "anthropicDefaultSonnetModel": str(
+            env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+            or effective.get("anthropicDefaultSonnetModel")
+            or env.get("ANTHROPIC_MODEL")
+            or effective.get("model", "")
+        ).strip(),
+        "anthropicDefaultOpusModel": str(
+            env.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+            or effective.get("anthropicDefaultOpusModel")
+            or env.get("ANTHROPIC_MODEL")
+            or effective.get("model", "")
+        ).strip(),
+        "anthropicDefaultHaikuModel": str(
+            env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+            or effective.get("anthropicDefaultHaikuModel")
+            or env.get("ANTHROPIC_MODEL")
+            or effective.get("model", "")
+        ).strip(),
         "openaiBaseUrl": openai_base_url,
         "openaiApiKey": openai_api_key,
         "openrouterBaseUrl": openrouter_base_url,
@@ -233,8 +525,22 @@ def load_runtime_config(cwd: str | Path | None = None) -> dict[str, Any]:
         "mcpServers": effective.get("mcpServers", {}),
         "globalUserProfilePath": str(global_user_profile),
         "projectUserProfilePath": str(proj_user_profile),
+        "globalManagedPolicyPath": str(global_managed_policy),
+        "projectManagedPolicyPath": str(proj_managed_policy),
+        "globalExtensionsDir": str(global_extensions),
+        "projectExtensionsDir": str(proj_extensions),
         "responseLanguage": response_language,
         "responseVerbosity": response_verbosity,
+        "fallbackModels": fallback_models,
+        "anthropicFallbackModels": anthropic_fallback_models,
+        "openaiFallbackModels": openai_fallback_models,
+        "openrouterFallbackModels": openrouter_fallback_models,
+        "customFallbackModels": custom_fallback_models,
+        "runtimeProfile": str(
+            os.environ.get("MINI_CODE_RUNTIME_PROFILE")
+            or effective.get("runtimeProfile", "")
+            or "single"
+        ).strip().lower(),
         "toolProfile": str(
             os.environ.get("MINI_CODE_TOOL_PROFILE")
             or effective.get("toolProfile", "")

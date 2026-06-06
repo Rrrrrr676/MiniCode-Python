@@ -43,6 +43,29 @@ class AgentStep:
     diagnostics: StepDiagnostics | None = None
 
 
+RuntimeEventCategory = Literal[
+    "phase",
+    "compaction",
+    "guard",
+    "widening",
+    "recovery",
+    "stop",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeEvent:
+    category: RuntimeEventCategory
+    message: str
+    step: int | None = None
+    profile: str = ""
+    phase: str = ""
+    verification_focus: str = ""
+    stop_reason: str = ""
+    widening_reason: str = ""
+    evidence_summary: str = ""
+
+
 class ModelAdapter(Protocol):
     def next(
         self,

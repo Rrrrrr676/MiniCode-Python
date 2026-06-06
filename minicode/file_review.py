@@ -3,6 +3,7 @@ from __future__ import annotations
 import difflib
 from pathlib import Path
 
+from minicode.session import create_file_checkpoint
 from minicode.tooling import ToolContext, ToolResult
 
 
@@ -44,6 +45,12 @@ def apply_reviewed_file_change(
     if context.permissions is not None:
         context.permissions.ensure_edit(str(target), diff)
 
+    create_file_checkpoint(
+        context.session,
+        file_path=str(target),
+        existed=target.exists(),
+        previous_content=previous_content,
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(next_content, encoding="utf-8")
     return ToolResult(ok=True, output=f"Applied reviewed changes to {file_path}")

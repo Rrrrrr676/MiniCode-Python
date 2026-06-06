@@ -12,8 +12,10 @@ from minicode.agent_loop import run_agent_turn
 from minicode.context_manager import save_context_state
 from minicode.history import save_history_entries
 from minicode.local_tool_shortcuts import parse_local_tool_shortcut
-from minicode.prompt import build_system_prompt
+from minicode.prompt import build_system_prompt_bundle
 from minicode.tooling import ToolContext
+from minicode.types import RuntimeEvent
+from minicode.tui.session_flow import refresh_tty_session_snapshot
 from minicode.tui.tool_helpers import _summarize_tool_input, _is_file_edit_tool, _extract_path_from_tool_input, _summarize_collapsed_tool_body
 from minicode.tui.tool_lifecycle import _push_transcript_entry, _update_tool_entry, _update_transcript_entry, _append_to_transcript_entry, _collapse_tool_entry, _finalize_dangling_running_tools, _get_running_tool_entries, _schedule_tool_auto_collapse
 
@@ -250,7 +252,11 @@ def _execute_tool_shortcut(
         result = args.tools.execute(
             tool_name,
             tool_input,
-            context=ToolContext(cwd=args.cwd, permissions=args.permissions),
+            context=ToolContext(
+                cwd=args.cwd,
+                permissions=args.permissions,
+                session=state.session,
+            ),
         )
         state.recent_tools.append({
             "name": tool_name,
@@ -330,7 +336,14 @@ def _handle_input(
         return False
 
     # Local commands
-    local_result = try_handle_local_command(input_text, tools=args.tools, cwd=args.cwd)
+    if state.session is not None:
+        refresh_tty_session_snapshot(args, state)
+    local_result = try_handle_local_command(
+        input_text,
+        tools=args.tools,
+        cwd=args.cwd,
+        session=state.session,
+    )
     if local_result is not None:
         _push_transcript_entry(state, kind="assistant", body=local_result)
         return False
@@ -390,21 +403,26 @@ def _handle_input(
     aggregated_edit_by_entry_id: dict[int, AggregatedEditProgress] = {}
 
     # Refresh system prompt
+    bundle = build_system_prompt_bundle(
+        args.cwd,
+        args.permissions.get_summary(),
+        {
+            "skills": args.tools.get_skills(),
+            "mcpServers": args.tools.get_mcp_servers(),
+            "memory_context": memory_mgr.get_relevant_context(query=input_text) if memory_mgr is not None else "",
+            "runtime": args.runtime,
+        },
+    )
+    args.prompt_bundle = bundle
+    args.product_snapshot = bundle.product_snapshot
     args.messages[0] = {
         "role": "system",
-        "content": build_system_prompt(
-            args.cwd,
-            args.permissions.get_summary(),
-            {
-                "skills": args.tools.get_skills(),
-                "mcpServers": args.tools.get_mcp_servers(),
-                "memory_context": memory_mgr.get_relevant_context(query=input_text) if memory_mgr is not None else "",
-            },
-        ),
+        "content": bundle.prompt,
     }
     args.messages.append({"role": "user", "content": input_text})
 
     active_stream_entry_id = None
+    pending_runtime_progress: str | None = None
 
     def on_assistant_stream_chunk(content: str) -> None:
         nonlocal active_stream_entry_id
@@ -433,12 +451,68 @@ def _handle_input(
         rerender()
 
     def on_progress_message(content: str) -> None:
-        nonlocal active_stream_entry_id
+        nonlocal active_stream_entry_id, pending_runtime_progress
+        if pending_runtime_progress == content:
+            pending_runtime_progress = None
+            return
         if active_stream_entry_id is not None:
-            _update_transcript_entry(state, active_stream_entry_id, kind="progress", body=content)
+            _update_transcript_entry(
+                state,
+                active_stream_entry_id,
+                kind="progress",
+                body=content,
+                category=None,
+                runtimeKind=None,
+                runtimeStep=None,
+                runtimePhase=None,
+                runtimeStopReason=None,
+                runtimeVerificationFocus=None,
+            )
             active_stream_entry_id = None
         else:
-            _push_transcript_entry(state, kind="progress", body=content)
+            _push_transcript_entry(
+                state,
+                kind="progress",
+                body=content,
+                category=None,
+                runtimeKind=None,
+                runtimeStep=None,
+                runtimePhase=None,
+                runtimeStopReason=None,
+                runtimeVerificationFocus=None,
+            )
+        state.transcript_scroll_offset = 0
+        rerender()
+
+    def on_runtime_event(event: RuntimeEvent) -> None:
+        nonlocal active_stream_entry_id, pending_runtime_progress
+        pending_runtime_progress = event.message
+        if active_stream_entry_id is not None:
+            _update_transcript_entry(
+                state,
+                active_stream_entry_id,
+                kind="progress",
+                body=event.message,
+                category="runtime",
+                runtimeKind=event.category,
+                runtimeStep=event.step,
+                runtimePhase=event.phase or None,
+                runtimeStopReason=event.stop_reason or None,
+                runtimeVerificationFocus=event.verification_focus or None,
+            )
+            active_stream_entry_id = None
+        else:
+            _push_transcript_entry(
+                state,
+                kind="progress",
+                body=event.message,
+                category="runtime",
+                runtimeKind=event.category,
+                runtimeStep=event.step,
+                runtimePhase=event.phase or None,
+                runtimeStopReason=event.stop_reason or None,
+                runtimeVerificationFocus=event.verification_focus or None,
+            )
         state.transcript_scroll_offset = 0
         rerender()
 
@@ -614,10 +688,12 @@ def _handle_input(
                 messages=list(args.messages),  # Copy to avoid race condition
                 cwd=args.cwd,
                 permissions=args.permissions,
+                session=state.session,
                 on_tool_start=on_tool_start,
                 on_tool_result=on_tool_result,
                 on_assistant_message=on_assistant_message,
                 on_progress_message=on_progress_message,
+                on_runtime_event=on_runtime_event,
                 on_assistant_stream_chunk=on_assistant_stream_chunk,
                 on_thinking_chunk=on_thinking_chunk,
                 store=state.app_state,

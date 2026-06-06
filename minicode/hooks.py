@@ -113,6 +113,9 @@ class HookRegistration:
     call_count: int = 0
     last_called: float | None = None
     total_duration_ms: int = 0
+    failure_count: int = 0
+    last_error: str = ""
+    last_status: str = "idle"
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +196,8 @@ class HookManager:
                 
                 registration.call_count += 1
                 registration.last_called = time.time()
+                registration.last_status = "success"
+                registration.last_error = ""
                 
                 duration_ms = int((time.time() - start_time) * 1000)
                 registration.total_duration_ms += duration_ms
@@ -201,6 +206,10 @@ class HookManager:
             
             except Exception as e:
                 # Don't let hook errors break main flow
+                registration.failure_count += 1
+                registration.last_called = time.time()
+                registration.last_status = "error"
+                registration.last_error = str(e)
                 results.append(f"Hook error: {e}")
         
         return results
@@ -222,6 +231,8 @@ class HookManager:
                 result = registration.handler(context)
                 registration.call_count += 1
                 registration.last_called = time.time()
+                registration.last_status = "success"
+                registration.last_error = ""
                 
                 duration_ms = int((time.time() - start_time) * 1000)
                 registration.total_duration_ms += duration_ms
@@ -229,6 +240,10 @@ class HookManager:
                 results.append(result)
             
             except Exception as e:
+                registration.failure_count += 1
+                registration.last_called = time.time()
+                registration.last_status = "error"
+                registration.last_error = str(e)
                 results.append(f"Hook error: {e}")
         
         return results
@@ -253,6 +268,21 @@ class HookManager:
             "enabled_hooks": sum(1 for h in hooks if h.enabled),
             "total_calls": sum(h.call_count for h in hooks),
             "total_duration_ms": sum(h.total_duration_ms for h in hooks),
+            "failure_count": sum(h.failure_count for h in hooks),
+            "hooks": [
+                {
+                    "event": h.event.value,
+                    "description": h.description or getattr(h.handler, "__name__", "hook"),
+                    "enabled": h.enabled,
+                    "is_async": h.is_async,
+                    "call_count": h.call_count,
+                    "failure_count": h.failure_count,
+                    "last_status": h.last_status,
+                    "last_error": h.last_error,
+                    "total_duration_ms": h.total_duration_ms,
+                }
+                for h in hooks
+            ],
         }
     
     def format_hook_status(self) -> str:

@@ -29,6 +29,99 @@ _TOOL_PREVIEW_LINES = 6
 _TOOL_PREVIEW_CHARS = 180
 
 
+def _is_runtime_progress_message(text: str) -> bool:
+    normalized = " ".join((text or "").split()).lower()
+    runtime_prefixes = (
+        "runtime phase:",
+        "verification guard:",
+        "compacted context for the current runtime phase.",
+        "depth stalled;",
+    )
+    if normalized.startswith(runtime_prefixes):
+        return True
+    return (
+        "widened mode is active" in normalized
+        or "widening is now available" in normalized
+        or "escalation trigger:" in normalized
+    )
+
+
+def _is_runtime_entry(entry: TranscriptEntry) -> bool:
+    return entry.category == "runtime" or _is_runtime_progress_message(entry.body)
+
+
+def _runtime_label_text(entry: TranscriptEntry) -> str:
+    runtime_kind = (entry.runtimeKind or "").strip()
+    return f"runtime:{runtime_kind}" if runtime_kind else "runtime"
+
+
+def _runtime_meta_suffix(entry: TranscriptEntry) -> str:
+    if not _is_runtime_entry(entry):
+        return ""
+
+    meta_parts: list[str] = []
+    if entry.runtimeStep is not None:
+        meta_parts.append(f"step={entry.runtimeStep}")
+    if entry.runtimePhase:
+        meta_parts.append(f"phase={entry.runtimePhase}")
+    if entry.runtimeStopReason:
+        meta_parts.append(f"reason={entry.runtimeStopReason}")
+    if entry.runtimeVerificationFocus:
+        meta_parts.append(f"verify={entry.runtimeVerificationFocus}")
+    return f" [{' '.join(meta_parts)}]" if meta_parts else ""
+
+
+def _runtime_trace_token(entry: TranscriptEntry) -> str | None:
+    if not _is_runtime_entry(entry):
+        return None
+
+    step_suffix = f"@{entry.runtimeStep}" if entry.runtimeStep is not None else ""
+    runtime_kind = (entry.runtimeKind or "").strip().lower()
+
+    if runtime_kind == "phase":
+        detail = (entry.runtimePhase or "unknown").strip() or "unknown"
+        return f"phase:{detail}{step_suffix}"
+    if runtime_kind == "guard":
+        detail = (
+            (entry.runtimeVerificationFocus or "").strip()
+            or (entry.runtimeStopReason or "").strip()
+            or "verification"
+        )
+        return f"guard:{detail}{step_suffix}"
+    if runtime_kind == "widening":
+        detail = (entry.runtimeStopReason or "").strip() or "escalation"
+        return f"widen:{detail}{step_suffix}"
+    if runtime_kind == "stop":
+        detail = (entry.runtimeStopReason or "").strip() or "done"
+        return f"stop:{detail}{step_suffix}"
+    if runtime_kind == "compaction":
+        detail = (entry.runtimePhase or "").strip() or "context"
+        return f"compact:{detail}{step_suffix}"
+    if runtime_kind == "recovery":
+        detail = (entry.runtimeStopReason or "").strip() or "resume"
+        return f"recover:{detail}{step_suffix}"
+
+    return f"{runtime_kind or 'runtime'}{step_suffix}"
+
+
+def _runtime_trace_summary(entries: list[TranscriptEntry]) -> str | None:
+    trace_tokens: list[str] = []
+    for entry in entries:
+        token = _runtime_trace_token(entry)
+        if token and (not trace_tokens or trace_tokens[-1] != token):
+            trace_tokens.append(token)
+    if not trace_tokens:
+        return None
+    return " -> ".join(trace_tokens)
+
+
+def format_runtime_summary_line(entries: list[TranscriptEntry]) -> str | None:
+    runtime_summary = _runtime_trace_summary(entries)
+    if not runtime_summary:
+        return None
+    return f"runtime-summary: {runtime_summary}"
+
+
 def _indent_block(text: str, prefix: str = "  ") -> str:
     """Indent all lines in a block of text."""
     return "\n".join(prefix + line for line in text.split("\n"))
@@ -65,8 +158,14 @@ def _render_transcript_entry(entry: TranscriptEntry) -> str:
         return f"{label}\n{_indent_block(render_markdownish(entry.body))}"
 
     if entry.kind == "progress":
-        label = f"{t.progress}{t.bold}▶ progress{t.reset}"
-        return f"{label}\n{_indent_block(render_markdownish(entry.body))}"
+        label_text = (
+            _runtime_label_text(entry)
+            if _is_runtime_entry(entry)
+            else "progress"
+        )
+        label = f"{t.progress}{t.bold}▶ {label_text}{t.reset}"
+        meta_suffix = _runtime_meta_suffix(entry)
+        return f"{label}{meta_suffix}\n{_indent_block(render_markdownish(entry.body))}"
 
     if entry.kind == "tool":
         if entry.status == "running":
@@ -161,6 +260,12 @@ _EntryCacheKey = tuple[
     str,
     str,
     str | None,
+    str | None,
+    int | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
     bool,
     int | None,
     str | None,
@@ -179,6 +284,12 @@ def _entry_cache_key(entry: TranscriptEntry) -> _EntryCacheKey:
     return (
         entry.kind,
         entry.body,
+        entry.category,
+        entry.runtimeKind,
+        entry.runtimeStep,
+        entry.runtimePhase,
+        entry.runtimeStopReason,
+        entry.runtimeVerificationFocus,
         entry.status,
         entry.collapsed,
         entry.collapsePhase,
@@ -434,8 +545,16 @@ def _render_transcript_lines(entries: list[TranscriptEntry]) -> list[str]:
 def format_transcript_text(entries: list[TranscriptEntry]) -> str:
     """Format transcript entries as plain text (no ANSI) for file saving."""
     parts = []
+    runtime_summary_line = format_runtime_summary_line(entries)
+    if runtime_summary_line:
+        parts.append(f"runtime-summary\n  {runtime_summary_line.removeprefix('runtime-summary: ')}")
     for entry in entries:
-        label = "you" if entry.kind == "user" else entry.kind
+        if entry.kind == "user":
+            label = "you"
+        elif entry.kind == "progress" and _is_runtime_entry(entry):
+            label = _runtime_label_text(entry) + _runtime_meta_suffix(entry)
+        else:
+            label = entry.kind
         if entry.kind == "tool":
             status_text = f" ({entry.status})" if entry.status else ""
             label = f"{entry.toolName or 'tool'}{status_text}"

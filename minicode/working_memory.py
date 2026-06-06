@@ -253,9 +253,15 @@ def protect_context(
     content: str,
     entry_type: str = "active_task",
     ttl_seconds: float | None = None,
+    importance: float = 1.0,
 ) -> WorkingMemoryEntry:
     """Convenience function to protect context during compaction."""
-    return _working_memory.add(content, entry_type, ttl_seconds)
+    return _working_memory.add(
+        content,
+        entry_type,
+        ttl_seconds,
+        importance=importance,
+    )
 
 
 def mark_continuity(

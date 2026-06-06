@@ -60,6 +60,45 @@ def _summarize_tool_input(tool_name: str, tool_input: Any) -> str:
         return _truncate_for_display(repr(tool_input))
 
 
+def _record_recent_tool(
+    state_obj: Any,
+    tool_name: str,
+    status: str,
+    *,
+    display_name: str | None = None,
+    max_items: int = 12,
+) -> None:
+    recent_tools = getattr(state_obj, "recent_tools", None)
+    if recent_tools is None:
+        return
+
+    label = display_name or tool_name
+    if recent_tools:
+        last = recent_tools[-1]
+        if last.get("tool") == tool_name and last.get("status") == status:
+            count = int(last.get("count", 1)) + 1
+            last["count"] = count
+            last["name"] = f"{tool_name} x{count}"
+        else:
+            recent_tools.append({
+                "tool": tool_name,
+                "name": label,
+                "status": status,
+                "count": 1,
+            })
+    else:
+        recent_tools.append({
+            "tool": tool_name,
+            "name": label,
+            "status": status,
+            "count": 1,
+        })
+
+    overflow = len(recent_tools) - max_items
+    if overflow > 0:
+        del recent_tools[:overflow]
+
+
 def _is_file_edit_tool(tool_name: str) -> bool:
     return tool_name in ("edit_file", "patch_file", "modify_file", "write_file")
 
@@ -105,7 +144,7 @@ def _mark_unfinished_tools(state_obj: Any) -> int:
             entry.collapsed = False
             entry.collapsedSummary = None
             entry.collapsePhase = None
-            state_obj.recent_tools.append({"name": entry.toolName or "unknown", "status": "error"})
+            _record_recent_tool(state_obj, entry.toolName or "unknown", "error")
             count += 1
     if hasattr(state_obj, "pending_tool_runs"):
         state_obj.pending_tool_runs = {}

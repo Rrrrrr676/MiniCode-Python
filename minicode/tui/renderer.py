@@ -3,6 +3,7 @@ import sys
 import time
 from typing import Any
 from minicode.background_tasks import list_background_tasks
+from minicode.session import format_checkpoint_summary_line
 from minicode.tui.chrome import (
     _cached_terminal_size,
     render_banner,
@@ -16,7 +17,7 @@ from minicode.tui.chrome import (
     RESET,
 )
 from minicode.tui.input import render_input_prompt
-from minicode.tui.transcript import render_transcript
+from minicode.tui.transcript import format_runtime_summary_line, render_transcript
 from minicode.tui.state import TtyAppArgs, ScreenState
 from minicode.tui.navigation import _get_transcript_body_lines, _get_visible_commands
 from minicode.tui.tool_helpers import _get_session_stats
@@ -151,6 +152,43 @@ def _get_transcript_snapshot(state: ScreenState) -> list[TranscriptEntry]:
     return snapshot
 
 
+def _decorate_session_feed_body(
+    transcript_body: str,
+    transcript_entries: list[TranscriptEntry],
+    session: Any | None = None,
+) -> str:
+    checkpoint_summary_line = format_checkpoint_summary_line(session)
+    runtime_summary_line = format_runtime_summary_line(transcript_entries)
+    session_metadata = getattr(session, "metadata", None)
+    summary_lines = [
+        line
+        for line in (
+            checkpoint_summary_line,
+            runtime_summary_line,
+            f"readiness-summary: {session_metadata.readiness_summary}"
+            if session_metadata and getattr(session_metadata, "readiness_summary", "")
+            else "",
+            f"instruction-summary: {session_metadata.instruction_summary}"
+            if session_metadata and getattr(session_metadata, "instruction_summary", "")
+            else "",
+            f"hook-summary: {session_metadata.hook_summary}"
+            if session_metadata and getattr(session_metadata, "hook_summary", "")
+            else "",
+            f"delegation-summary: {session_metadata.delegation_summary}"
+            if session_metadata and getattr(session_metadata, "delegation_summary", "")
+            else "",
+            f"extension-summary: {session_metadata.extension_summary}"
+            if session_metadata and getattr(session_metadata, "extension_summary", "")
+            else "",
+        )
+        if line
+    ]
+    if not summary_lines:
+        return transcript_body
+    summary_block = f"{RESET}\n{SUBTLE}".join(summary_lines)
+    return f"{SUBTLE}{summary_block}{RESET}\n\n{transcript_body}"
+
+
 def _render_screen(args: TtyAppArgs, state: ScreenState) -> None:
     global _last_render_hash, _last_render_time
     
@@ -216,6 +254,11 @@ def _render_screen(args: TtyAppArgs, state: ScreenState) -> None:
             state.transcript_scroll_offset,
             body_lines,
             state.transcript_revision,
+        )
+        transcript_body = _decorate_session_feed_body(
+            transcript_body,
+            transcript_snapshot,
+            state.session,
         )
     else:
         transcript_body = f"{render_status_line(None)}\n\nType /help for commands."

@@ -61,6 +61,15 @@ def _extract_error_message(data: Any, status: int) -> str:
     return f"Model request failed: {status}"
 
 
+def _messages_endpoint(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1/messages"):
+        return normalized
+    if normalized.endswith("/v1"):
+        return normalized + "/messages"
+    return normalized + "/v1/messages"
+
+
 def _parse_assistant_text(content: str) -> tuple[str, str | None]:
     trimmed = content.strip()
     if not trimmed:
@@ -187,7 +196,7 @@ class AnthropicModelAdapter:
             request_body["stream"] = True
 
         request = urllib.request.Request(
-            url=self.runtime["baseUrl"].rstrip("/") + "/v1/messages",
+            url=_messages_endpoint(self.runtime["baseUrl"]),
             data=json.dumps(request_body).encode("utf-8"),
             headers={
                 "content-type": "application/json",
@@ -203,12 +212,14 @@ class AnthropicModelAdapter:
 
         max_retries = _get_retry_limit()
         response = None
+        last_exception: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
                 timeout = int(os.environ.get("MINICODE_MODEL_TIMEOUT", "60"))
                 response = urllib.request.urlopen(request, timeout=timeout)
                 break
             except urllib.error.HTTPError as error:
+                last_exception = error
                 response = error
                 if error.code not in RETRYABLE_STATUS or attempt >= max_retries:
                     break
@@ -219,11 +230,17 @@ class AnthropicModelAdapter:
                 wait = calculate_backoff(attempt, retry_after=retry_after,
                                         category=category)
                 time.sleep(wait)
-            except urllib.error.URLError:
+            except urllib.error.URLError as error:
+                last_exception = error
                 if attempt >= max_retries:
-                    raise
+                    break
                 wait = calculate_backoff(attempt)
                 time.sleep(wait)
+        if response is None:
+            if last_exception is not None:
+                raise RuntimeError(
+                    f"Model request failed before receiving a response: {last_exception}"
+                ) from last_exception
             raise RuntimeError("Model request failed before receiving a response")
 
         if not on_stream_chunk:

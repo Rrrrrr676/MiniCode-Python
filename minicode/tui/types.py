@@ -9,6 +9,12 @@ class TranscriptEntry:
     id: int
     kind: Literal["user", "assistant", "progress", "tool"]
     body: str
+    category: str | None = None
+    runtimeKind: str | None = None
+    runtimeStep: int | None = None
+    runtimePhase: str | None = None
+    runtimeStopReason: str | None = None
+    runtimeVerificationFocus: str | None = None
     toolName: str | None = None
     status: Literal["running", "success", "error"] | None = None
     collapsed: bool = False
@@ -26,6 +32,12 @@ def _create_transcript_entry(
     id: int,
     kind: Literal["user", "assistant", "progress", "tool"],
     body: str,
+    category: str | None = None,
+    runtimeKind: str | None = None,
+    runtimeStep: int | None = None,
+    runtimePhase: str | None = None,
+    runtimeStopReason: str | None = None,
+    runtimeVerificationFocus: str | None = None,
     toolName: str | None = None,
     status: Literal["running", "success", "error"] | None = None,
     collapsed: bool = False,
@@ -38,6 +50,12 @@ def _create_transcript_entry(
         entry.id = id
         entry.kind = kind
         entry.body = body
+        entry.category = category
+        entry.runtimeKind = runtimeKind
+        entry.runtimeStep = runtimeStep
+        entry.runtimePhase = runtimePhase
+        entry.runtimeStopReason = runtimeStopReason
+        entry.runtimeVerificationFocus = runtimeVerificationFocus
         entry.toolName = toolName
         entry.status = status
         entry.collapsed = collapsed
@@ -49,6 +67,12 @@ def _create_transcript_entry(
             id=id,
             kind=kind,
             body=body,
+            category=category,
+            runtimeKind=runtimeKind,
+            runtimeStep=runtimeStep,
+            runtimePhase=runtimePhase,
+            runtimeStopReason=runtimeStopReason,
+            runtimeVerificationFocus=runtimeVerificationFocus,
             toolName=toolName,
             status=status,
             collapsed=collapsed,

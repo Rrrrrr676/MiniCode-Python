@@ -99,6 +99,7 @@ def run_headless(prompt: str | None = None) -> str:
             messages=messages,
             cwd=cwd,
             permissions=permissions,
+            runtime=runtime,
         )
 
         # Extract last assistant message

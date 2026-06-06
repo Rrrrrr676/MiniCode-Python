@@ -13,7 +13,17 @@ from minicode.local_tool_shortcuts import parse_local_tool_shortcut
 from minicode.manage_cli import maybe_handle_management_command
 from minicode.model_registry import create_model_adapter
 from minicode.permissions import PermissionManager
-from minicode.prompt import build_system_prompt
+from minicode.prompt import build_system_prompt_bundle
+from minicode.session import (
+    format_rewind_preview,
+    format_session_checkpoints,
+    format_session_inspect,
+    format_session_replay,
+    format_session_resume,
+    get_latest_session,
+    load_session,
+    rewind_session,
+)
 from minicode.tools import create_default_tool_registry
 from minicode.tooling import ToolContext
 from minicode.tui.transcript import format_transcript_text
@@ -106,6 +116,101 @@ def _save_transcript_file(cwd: str, permissions, transcript: list[TranscriptEntr
     target.write_text(format_transcript_text(transcript), encoding="utf-8")
     return str(target)
 
+
+def _resolve_target_session(cwd: str, session_id: str | None):
+    workspace = str(Path(cwd).resolve())
+    return (
+        get_latest_session(workspace=workspace)
+        if session_id in (None, "", "latest")
+        else load_session(session_id)
+    )
+
+
+def _handle_list_checkpoints_request(cwd: str, session_id: str | None) -> int:
+    target_session = _resolve_target_session(cwd, session_id)
+    if target_session is None:
+        print("No saved session found for checkpoint inspection.", file=sys.stderr)
+        return 1
+
+    print(format_session_checkpoints(target_session))
+    return 0
+
+
+def _handle_inspect_session_request(cwd: str, session_id: str | None) -> int:
+    target_session = _resolve_target_session(cwd, session_id)
+    if target_session is None:
+        print("No saved session found for inspection.", file=sys.stderr)
+        return 1
+
+    print(format_session_inspect(target_session))
+    return 0
+
+
+def _handle_replay_session_request(cwd: str, session_id: str | None) -> int:
+    target_session = _resolve_target_session(cwd, session_id)
+    if target_session is None:
+        print("No saved session found for replay.", file=sys.stderr)
+        return 1
+
+    print(format_session_replay(target_session))
+    return 0
+
+
+def _handle_rewind_request(
+    cwd: str,
+    session_id: str | None,
+    steps: int,
+    checkpoint_id: str | None,
+) -> int:
+    target_session = _resolve_target_session(cwd, session_id)
+    if target_session is None:
+        print("No saved session found to rewind.", file=sys.stderr)
+        return 1
+
+    session, restored = rewind_session(
+        target_session.session_id,
+        steps=steps,
+        checkpoint_id=checkpoint_id,
+    )
+    if session is None or not restored:
+        print("No checkpoints available to rewind for that session.", file=sys.stderr)
+        return 1
+
+    if checkpoint_id:
+        print(
+            f"Rewound {len(restored)} checkpoint(s) through {checkpoint_id[:8]} "
+            f"for session {session.session_id[:8]}."
+        )
+    else:
+        print(f"Rewound {len(restored)} checkpoint(s) for session {session.session_id[:8]}.")
+    for checkpoint in restored:
+        print(f"  - [{checkpoint.checkpoint_id[:8]}] {checkpoint.file_path}")
+    print(format_session_resume(session))
+    return 0
+
+
+def _handle_preview_rewind_request(
+    cwd: str,
+    session_id: str | None,
+    steps: int,
+    checkpoint_id: str | None,
+) -> int:
+    target_session = _resolve_target_session(cwd, session_id)
+    if target_session is None:
+        print("No saved session found to preview.", file=sys.stderr)
+        return 1
+
+    preview = format_rewind_preview(
+        target_session,
+        steps=steps,
+        checkpoint_id=checkpoint_id,
+    )
+    if preview.startswith("No checkpoints available"):
+        print(preview, file=sys.stderr)
+        return 1
+    print(preview)
+    return 0
+
 def main() -> None:
     _configure_stdio_for_unicode()
 
@@ -131,6 +236,59 @@ def main() -> None:
         default=None,
         metavar="SESSION_ID",
         help="Start with a specific session ID",
+    )
+    parser.add_argument(
+        "--rewind",
+        nargs="?",
+        const="latest",
+        default=None,
+        metavar="SESSION_ID",
+        help="Rewind the latest checkpointed file edit for a saved session",
+    )
+    parser.add_argument(
+        "--preview-rewind",
+        nargs="?",
+        const="latest",
+        default=None,
+        metavar="SESSION_ID",
+        help="Preview the latest checkpointed file edit that would be rewound for a saved session",
+    )
+    parser.add_argument(
+        "--list-checkpoints",
+        nargs="?",
+        const="latest",
+        default=None,
+        metavar="SESSION_ID",
+        help="List saved rewind checkpoints for a session",
+    )
+    parser.add_argument(
+        "--inspect-session",
+        nargs="?",
+        const="latest",
+        default=None,
+        metavar="SESSION_ID",
+        help="Inspect a saved session with runtime, checkpoint, and transcript summary",
+    )
+    parser.add_argument(
+        "--replay-session",
+        nargs="?",
+        const="latest",
+        default=None,
+        metavar="SESSION_ID",
+        help="Replay a saved session with checkpoint, prompt history, and transcript timeline",
+    )
+    parser.add_argument(
+        "--rewind-steps",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of checkpoints to rewind when used with --rewind (default: 1)",
+    )
+    parser.add_argument(
+        "--rewind-to",
+        default=None,
+        metavar="CHECKPOINT_ID",
+        help="Rewind back through a specific checkpoint ID instead of using --rewind-steps",
     )
     parser.add_argument(
         "--install",
@@ -172,6 +330,35 @@ def main() -> None:
     
     cwd = str(Path.cwd())
     argv = remaining_argv
+
+    if args.list_checkpoints is not None:
+        raise SystemExit(_handle_list_checkpoints_request(cwd, args.list_checkpoints))
+
+    if args.inspect_session is not None:
+        raise SystemExit(_handle_inspect_session_request(cwd, args.inspect_session))
+
+    if args.replay_session is not None:
+        raise SystemExit(_handle_replay_session_request(cwd, args.replay_session))
+
+    if args.rewind is not None:
+        raise SystemExit(
+            _handle_rewind_request(
+                cwd,
+                args.rewind,
+                max(1, args.rewind_steps),
+                args.rewind_to,
+            )
+        )
+
+    if args.preview_rewind is not None:
+        raise SystemExit(
+            _handle_preview_rewind_request(
+                cwd,
+                args.preview_rewind,
+                max(1, args.rewind_steps),
+                args.rewind_to,
+            )
+        )
     
     # Filter out our custom args before passing to management commands
     management_argv = [a for a in argv if not a.startswith("--")]
@@ -245,18 +432,20 @@ def main() -> None:
     )
     logger.info("Store initialized with session: %s", app_store.get_state().session_id)
     
+    prompt_bundle = build_system_prompt_bundle(
+        cwd,
+        permissions.get_summary(),
+        {
+            "skills": tools.get_skills(),
+            "mcpServers": tools.get_mcp_servers(),
+            "memory_context": memory_mgr.get_relevant_context(),  # Inject memory
+            "runtime": runtime,
+        },
+    )
     messages = [
         {
             "role": "system",
-            "content": build_system_prompt(
-                cwd,
-                permissions.get_summary(),
-                {
-                    "skills": tools.get_skills(),
-                    "mcpServers": tools.get_mcp_servers(),
-                    "memory_context": memory_mgr.get_relevant_context(),  # Inject memory
-                },
-            ),
+            "content": prompt_bundle.prompt,
         }
     ]
     history = load_history_entries()
@@ -331,17 +520,19 @@ def main() -> None:
                 messages.append({"role": "user", "content": user_input})
                 history.append(user_input)
                 save_history_entries(history)
+                prompt_bundle = build_system_prompt_bundle(
+                    cwd,
+                    permissions.get_summary(),
+                    {
+                        "skills": tools.get_skills(),
+                        "mcpServers": tools.get_mcp_servers(),
+                        "memory_context": memory_mgr.get_relevant_context(query=user_input),
+                        "runtime": runtime,
+                    },
+                )
                 messages[0] = {
                     "role": "system",
-                    "content": build_system_prompt(
-                        cwd,
-                        permissions.get_summary(),
-                        {
-                            "skills": tools.get_skills(),
-                            "mcpServers": tools.get_mcp_servers(),
-                            "memory_context": memory_mgr.get_relevant_context(query=user_input),
-                        },
-                    ),
+                    "content": prompt_bundle.prompt,
                 }
                 permissions.begin_turn()
                 messages = run_agent_turn(
@@ -377,6 +568,8 @@ def main() -> None:
             list_sessions_only=args.list_sessions,
             memory_manager=memory_mgr,
             context_manager=context_mgr,
+            prompt_bundle=prompt_bundle,
+            product_snapshot=prompt_bundle.product_snapshot,
         )
     except KeyboardInterrupt:
         print("\n\nInterrupted by user. Shutting down gracefully...")

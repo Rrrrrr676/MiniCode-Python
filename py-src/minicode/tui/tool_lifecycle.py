@@ -5,7 +5,7 @@ import time
 from typing import Any, Callable
 
 from minicode.tui.state import ScreenState
-from minicode.tui.tool_helpers import _summarize_collapsed_tool_body
+from minicode.tui.tool_helpers import _record_recent_tool, _summarize_collapsed_tool_body
 from minicode.tui.types import TranscriptEntry
 
 
@@ -68,7 +68,7 @@ def _mark_running_tools_as_error(state: ScreenState, message: str) -> None:
             entry.collapsed = False
             entry.collapsedSummary = None
             entry.collapsePhase = None
-            state.recent_tools.append({"name": entry.toolName or "unknown", "status": "error"})
+            _record_recent_tool(state, entry.toolName or "unknown", "error")
             changed = True
     if any(e.kind == "tool" and e.status == "error" for e in state.transcript):
         state.active_tool = None

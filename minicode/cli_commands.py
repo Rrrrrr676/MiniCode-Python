@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from minicode.config import (
     CLAUDE_SETTINGS_PATH,
@@ -9,6 +10,25 @@ from minicode.config import (
     MINI_CODE_SETTINGS_PATH,
     load_runtime_config,
     save_mini_code_settings,
+)
+from minicode.product_surfaces import (
+    build_product_snapshot,
+    extension_manifest_payload,
+    resolve_extension_manifest,
+    set_extension_enabled,
+)
+from minicode.session import (
+    format_rewind_preview,
+    format_session_checkpoints,
+    format_session_inspect,
+    format_session_list,
+    format_session_replay,
+    format_session_resume,
+    get_latest_session,
+    list_sessions,
+    load_session,
+    rewind_session,
+    rewind_session_data,
 )
 
 
@@ -33,6 +53,25 @@ SLASH_COMMANDS = [
     SlashCommand("/history", "/history", "Show recent prompt history from ~/.mini-code/history.json."),
     SlashCommand("/clear", "/clear", "Clear the current transcript view."),
     SlashCommand("/retry", "/retry", "Retry the last natural-language prompt in this session."),
+    SlashCommand("/session", "/session", "Inspect the active session, runtime, checkpoints, and recent transcript."),
+    SlashCommand("/session", "/session <session-id|latest>", "Inspect a saved session for the current workspace."),
+    SlashCommand("/session-replay", "/session-replay", "Replay the active session with checkpoint, history, and transcript timeline."),
+    SlashCommand("/session-replay", "/session-replay <session-id|latest>", "Replay a saved session for the current workspace."),
+    SlashCommand("/sessions", "/sessions", "List saved sessions for the current workspace."),
+    SlashCommand("/instructions", "/instructions", "Inspect the active instruction layering surface."),
+    SlashCommand("/hooks", "/hooks", "Inspect active hooks and recent hook telemetry."),
+    SlashCommand("/delegation", "/delegation", "Inspect background delegation capacity and running tasks."),
+    SlashCommand("/extensions", "/extensions", "Inspect local extension manifests for this workspace."),
+    SlashCommand("/extension-inspect", "/extension-inspect <name>", "Inspect a local extension manifest and source path."),
+    SlashCommand("/extension-enable", "/extension-enable <name>", "Enable a local extension manifest."),
+    SlashCommand("/extension-disable", "/extension-disable <name>", "Disable a local extension manifest."),
+    SlashCommand("/readiness", "/readiness", "Inspect provider/runtime readiness for the current workspace."),
+    SlashCommand("/checkpoints", "/checkpoints", "List checkpoints for the active session."),
+    SlashCommand("/checkpoints", "/checkpoints <session-id|latest>", "List checkpoints for a saved session in the current workspace."),
+    SlashCommand("/rewind-preview", "/rewind-preview [latest|steps|checkpoint-id]", "Preview checkpointed file edits that would be rewound for the active session."),
+    SlashCommand("/rewind", "/rewind [latest|steps|checkpoint-id]", "Rewind checkpointed file edits for the active session."),
+    SlashCommand("/session-rewind-preview", "/session-rewind-preview <session-id|latest> [latest|steps|checkpoint-id]", "Preview checkpointed file edits that would be rewound for a saved session."),
+    SlashCommand("/session-rewind", "/session-rewind <session-id|latest> [latest|steps|checkpoint-id]", "Rewind checkpointed file edits for a saved session in the current workspace."),
     SlashCommand("/transcript-save", "/transcript-save <path>", "Save the current session transcript to a text file."),
     SlashCommand("/model", "/model", "Show the current model."),
     SlashCommand("/model", "/model <model-name>", "Persist a model override into ~/.mini-code/settings.json."),
@@ -94,6 +133,25 @@ def format_slash_commands() -> str:
             ("/modify <path>", "Replace file with reviewable diff"),
         ],
         "💾 Session Management": [
+            ("/session", "Inspect current session state"),
+            ("/session <id>", "Inspect saved session or latest"),
+            ("/session-replay", "Replay active session timeline"),
+            ("/session-replay <id>", "Replay saved session timeline"),
+            ("/sessions", "List saved sessions for workspace"),
+            ("/instructions", "Inspect active instruction layering"),
+            ("/hooks", "Inspect hook telemetry and failures"),
+            ("/delegation", "Inspect background task capacity"),
+            ("/extensions", "Inspect local extension manifests"),
+            ("/extension-inspect <name>", "Inspect one extension in detail"),
+            ("/extension-enable <name>", "Enable a local extension"),
+            ("/extension-disable <name>", "Disable a local extension"),
+            ("/readiness", "Inspect provider/runtime readiness"),
+            ("/checkpoints", "List active session checkpoints"),
+            ("/checkpoints <id>", "List saved session checkpoints"),
+            ("/rewind-preview [arg]", "Preview active session rewind plan"),
+            ("/rewind [arg]", "Rewind active session file edits"),
+            ("/session-rewind-preview <id> [arg]", "Preview saved session rewind plan"),
+            ("/session-rewind <id> [arg]", "Rewind saved session file edits"),
             ("/transcript-save <path>", "Save transcript to text file"),
             ("/retry", "Retry the last prompt"),
             ("/permissions", "Show permission storage path"),
@@ -143,7 +201,279 @@ def complete_slash_command(line: str) -> tuple[list[str], str]:
     return (hits if hits else commands, line)
 
 
-def try_handle_local_command(user_input: str, tools=None, cwd: str | None = None) -> str | None:
+def try_handle_local_command(
+    user_input: str,
+    tools=None,
+    cwd: str | None = None,
+    session=None,
+) -> str | None:
+    def _product_snapshot() -> dict:
+        if session is not None:
+            instruction_layers = list(getattr(session, "instruction_layers", []) or [])
+            hook_status = dict(getattr(session, "hook_status", {}) or {})
+            delegated_tasks = list(getattr(session, "delegated_tasks", []) or [])
+            delegation_status = dict(getattr(session, "delegation_status", {}) or {})
+            extension_manifests = list(getattr(session, "extension_manifests", []) or [])
+            readiness_report = dict(getattr(session, "readiness_report", {}) or {})
+            if any(
+                [
+                    instruction_layers,
+                    hook_status,
+                    delegated_tasks,
+                    delegation_status,
+                    extension_manifests,
+                    readiness_report,
+                ]
+            ):
+                metadata = getattr(session, "metadata", None)
+                return {
+                    "instruction_layers": instruction_layers,
+                    "instruction_summary": getattr(metadata, "instruction_summary", ""),
+                    "hook_status": hook_status,
+                    "hook_summary": getattr(metadata, "hook_summary", ""),
+                    "delegated_tasks": delegated_tasks,
+                    "delegation_status": delegation_status,
+                    "delegation_summary": getattr(metadata, "delegation_summary", ""),
+                    "extension_manifests": extension_manifests,
+                    "extension_summary": getattr(metadata, "extension_summary", ""),
+                    "readiness_report": readiness_report,
+                    "readiness_summary": getattr(metadata, "readiness_summary", ""),
+                }
+        if cwd is None:
+            return {}
+        return build_product_snapshot(cwd)
+
+    def _format_instruction_surface(snapshot: dict) -> str:
+        layers = list(snapshot.get("instruction_layers", []) or [])
+        lines = [
+            "Instruction surface:",
+            snapshot.get("instruction_summary", "instructions: unavailable"),
+        ]
+        if not layers:
+            lines.append("No instruction layers discovered for this workspace.")
+            return "\n".join(lines)
+        lines.append("")
+        lines.append(f"Layers ({len(layers)}):")
+        for layer in layers:
+            scope = str(layer.get("scope") or "unknown")
+            kind = str(layer.get("kind") or "unknown")
+            exists = "active" if layer.get("exists") else "missing"
+            path = str(layer.get("path") or "")
+            preview = str(layer.get("preview") or "")
+            detail = f"- {scope}/{kind}: {exists}"
+            if path:
+                detail += f" [{path}]"
+            lines.append(detail)
+            if preview:
+                lines.append(f"  preview: {preview}")
+        return "\n".join(lines)
+
+    def _format_hook_surface(snapshot: dict) -> str:
+        status = dict(snapshot.get("hook_status", {}) or {})
+        lines = [
+            "Hook surface:",
+            snapshot.get("hook_summary", "hooks: unavailable"),
+        ]
+        if not status:
+            lines.append("No hook telemetry is available.")
+            return "\n".join(lines)
+        lines.extend(
+            [
+                "",
+                f"Registered hooks: {status.get('enabled_hooks', 0)}/{status.get('total_hooks', 0)} enabled",
+                f"Calls: {status.get('total_calls', 0)}",
+                f"Duration: {status.get('total_duration_ms', 0)}ms",
+            ]
+        )
+        failure_count = status.get("failure_count")
+        last_status = status.get("last_status")
+        last_error = status.get("last_error")
+        if failure_count is not None:
+            lines.append(f"Failures: {failure_count}")
+        if last_status:
+            lines.append(f"Last status: {last_status}")
+        if last_error:
+            lines.append(f"Last error: {last_error}")
+        return "\n".join(lines)
+
+    def _format_delegation_surface(snapshot: dict) -> str:
+        status = dict(snapshot.get("delegation_status", {}) or {})
+        tasks = list(snapshot.get("delegated_tasks", []) or [])
+        lines = [
+            "Delegation surface:",
+            snapshot.get("delegation_summary", "delegation: unavailable"),
+        ]
+        if not status and not tasks:
+            lines.append("No delegation state is available.")
+            return "\n".join(lines)
+        if status:
+            lines.extend(
+                [
+                    "",
+                    f"Running tasks: {status.get('running_tasks', 0)}",
+                    f"Tracked tasks: {status.get('total_tracked', 0)}",
+                    f"Slots: {status.get('available_slots', 0)}/{status.get('max_slots', 0)} free",
+                ]
+            )
+            labels = list(status.get("active_labels", []) or [])
+            if labels:
+                lines.append(f"Active labels: {', '.join(str(label) for label in labels)}")
+        if tasks:
+            lines.append("")
+            lines.append(f"Tracked task details ({min(len(tasks), 5)} shown):")
+            for task in tasks[:5]:
+                label = str(task.get("label") or task.get("command") or task.get("taskId") or "task")
+                task_status = str(task.get("status") or "unknown")
+                lines.append(f"- {label} [{task_status}]")
+        return "\n".join(lines)
+
+    def _format_extension_surface(snapshot: dict) -> str:
+        manifests = list(snapshot.get("extension_manifests", []) or [])
+        lines = [
+            "Extension surface:",
+            snapshot.get("extension_summary", "extensions: unavailable"),
+        ]
+        if not manifests:
+            lines.append("No extension manifests were discovered.")
+            return "\n".join(lines)
+        lines.append("")
+        lines.append(f"Extensions ({len(manifests)}):")
+        for manifest in manifests:
+            name = str(manifest.get("name") or "extension")
+            scope = str(manifest.get("scope") or "unknown")
+            enabled = "enabled" if manifest.get("enabled", True) else "disabled"
+            version = str(manifest.get("version") or "").strip()
+            detail = f"- {name} [{scope}, {enabled}]"
+            if version:
+                detail += f" v{version}"
+            lines.append(detail)
+            description = str(manifest.get("description") or "").strip()
+            entrypoint = str(manifest.get("entrypoint") or "").strip()
+            if description:
+                lines.append(f"  {description}")
+            if entrypoint:
+                lines.append(f"  entrypoint: {entrypoint}")
+        return "\n".join(lines)
+
+    def _format_readiness_surface(snapshot: dict) -> str:
+        report = dict(snapshot.get("readiness_report", {}) or {})
+        lines = [
+            "Readiness surface:",
+            snapshot.get("readiness_summary", "readiness: unavailable"),
+        ]
+        if not report:
+            lines.append("No readiness report is available.")
+            return "\n".join(lines)
+        status = str(report.get("status") or "unknown")
+        provider = str(report.get("provider") or "unknown")
+        provider_ready = bool(report.get("provider_ready"))
+        fallback_ready = bool(report.get("fallback_ready"))
+        fallback_candidates = [
+            str(candidate)
+            for candidate in list(report.get("fallback_candidates", []) or [])
+            if str(candidate).strip()
+        ]
+        viable_fallbacks = [
+            str(candidate)
+            for candidate in list(report.get("viable_fallbacks", []) or [])
+            if str(candidate).strip()
+        ]
+        lines.extend(
+            [
+                "",
+                f"Status: {status}",
+                f"Provider: {provider}",
+                f"Provider ready: {'yes' if provider_ready else 'no'}",
+                f"Channel: {str(report.get('provider_channel') or 'unknown')}",
+                f"Fallback ready: {'yes' if fallback_ready else 'no'}",
+            ]
+        )
+        if fallback_candidates:
+            lines.append(
+                f"Configured fallbacks ({len(viable_fallbacks)}/{len(fallback_candidates)} locally ready):"
+            )
+            for candidate in fallback_candidates:
+                label = "ready" if candidate in viable_fallbacks else "not-ready"
+                lines.append(f"- {candidate} [{label}]")
+        issues = [str(issue) for issue in list(report.get("issues", []) or []) if str(issue).strip()]
+        if issues:
+            lines.append("Issues:")
+            lines.extend(f"- {issue}" for issue in issues)
+        guidance = [
+            str(item)
+            for item in list(report.get("fallback_guidance", []) or [])
+            if str(item).strip()
+        ]
+        if guidance:
+            lines.append("Guidance:")
+            lines.extend(f"- {item}" for item in guidance)
+        return "\n".join(lines)
+
+    def _format_extension_manifest_detail(identifier: str) -> str:
+        if cwd is None:
+            return "No workspace is available for extension inspection."
+        try:
+            manifest = resolve_extension_manifest(cwd, identifier)
+            payload = extension_manifest_payload(manifest)
+        except ValueError as exc:
+            return str(exc)
+        lines = [
+            f"Extension inspect: {manifest.name}",
+            f"Scope: {manifest.scope}",
+            f"Enabled: {'yes' if manifest.enabled else 'no'}",
+            f"Manifest: {manifest.path}",
+        ]
+        if manifest.version:
+            lines.append(f"Version: {manifest.version}")
+        if manifest.description:
+            lines.append(f"Description: {manifest.description}")
+        if manifest.entrypoint:
+            entrypoint = Path(manifest.path).parent / manifest.entrypoint
+            exists = "yes" if entrypoint.exists() else "no"
+            lines.append(f"Entrypoint: {manifest.entrypoint}")
+            lines.append(f"Entrypoint path: {entrypoint}")
+            lines.append(f"Entrypoint exists: {exists}")
+        extra_keys = sorted(
+            key for key in payload.keys()
+            if key not in {"name", "version", "description", "enabled", "entrypoint"}
+        )
+        if extra_keys:
+            lines.append("Extra manifest keys:")
+            lines.extend(f"- {key}" for key in extra_keys)
+        return "\n".join(lines)
+
+    def _set_extension_state(identifier: str, enabled: bool) -> str:
+        if cwd is None:
+            return "No workspace is available for extension changes."
+        try:
+            manifest = set_extension_enabled(cwd, identifier, enabled)
+        except ValueError as exc:
+            return str(exc)
+        status = "enabled" if enabled else "disabled"
+        return (
+            f"Extension {manifest.scope}:{manifest.name} is now {status}.\n\n"
+            f"{_format_extension_manifest_detail(f'{manifest.scope}:{manifest.name}')}"
+        )
+
+    def _format_rewind_result(target_session, restored, prefix: str) -> str:
+        restored_preview = ", ".join(
+            f"[{item.checkpoint_id[:8]}] {Path(item.file_path).name or item.file_path}"
+            for item in restored
+        )
+        return (
+            f"{prefix} {len(restored)} checkpoint(s) for session {target_session.session_id[:8]}.\n"
+            f"Restored: {restored_preview}\n\n"
+            f"{format_session_resume(target_session)}"
+        )
+
+    def _workspace_session(target: str):
+        workspace = str(Path(cwd).resolve()) if cwd else None
+        return (
+            get_latest_session(workspace=workspace)
+            if target == "latest"
+            else load_session(target)
+        )
+
     if user_input in {"/", "/help"}:
         return format_slash_commands()
 
@@ -159,6 +489,195 @@ def try_handle_local_command(user_input: str, tools=None, cwd: str | None = None
 
     if user_input == "/permissions":
         return f"permission store: {MINI_CODE_PERMISSIONS_PATH}"
+
+    if user_input == "/sessions":
+        workspace = str(Path(cwd).resolve()) if cwd else None
+        sessions = list_sessions()
+        if workspace is not None:
+            sessions = [meta for meta in sessions if meta.workspace == workspace]
+        return format_session_list(sessions)
+
+    if user_input == "/instructions":
+        return _format_instruction_surface(_product_snapshot())
+
+    if user_input == "/hooks":
+        return _format_hook_surface(_product_snapshot())
+
+    if user_input == "/delegation":
+        return _format_delegation_surface(_product_snapshot())
+
+    if user_input == "/extensions":
+        return _format_extension_surface(_product_snapshot())
+
+    if user_input.startswith("/extension-inspect "):
+        identifier = user_input[len("/extension-inspect ") :].strip()
+        if not identifier:
+            return "Usage: /extension-inspect <name>"
+        return _format_extension_manifest_detail(identifier)
+
+    if user_input.startswith("/extension-enable "):
+        identifier = user_input[len("/extension-enable ") :].strip()
+        if not identifier:
+            return "Usage: /extension-enable <name>"
+        return _set_extension_state(identifier, True)
+
+    if user_input.startswith("/extension-disable "):
+        identifier = user_input[len("/extension-disable ") :].strip()
+        if not identifier:
+            return "Usage: /extension-disable <name>"
+        return _set_extension_state(identifier, False)
+
+    if user_input == "/readiness":
+        return _format_readiness_surface(_product_snapshot())
+
+    if user_input == "/session":
+        if session is None:
+            return "No active session."
+        return format_session_inspect(session)
+
+    if user_input == "/session-replay":
+        if session is None:
+            return "No active session."
+        return format_session_replay(session)
+
+    if user_input == "/checkpoints":
+        if session is None:
+            return "No active session."
+        return format_session_checkpoints(session)
+
+    if user_input.startswith("/session "):
+        target = user_input[len("/session ") :].strip()
+        if not target:
+            return "Usage: /session <session-id|latest>"
+        if session is not None and target == getattr(session, "session_id", None):
+            return format_session_inspect(session)
+        target_session = _workspace_session(target)
+        if target_session is None:
+            return "No saved session found for inspection."
+        return format_session_inspect(target_session)
+
+    if user_input.startswith("/session-replay "):
+        target = user_input[len("/session-replay ") :].strip()
+        if not target:
+            return "Usage: /session-replay <session-id|latest>"
+        if session is not None and target == getattr(session, "session_id", None):
+            return format_session_replay(session)
+        target_session = _workspace_session(target)
+        if target_session is None:
+            return "No saved session found for replay."
+        return format_session_replay(target_session)
+
+    if user_input.startswith("/checkpoints "):
+        target = user_input[len("/checkpoints ") :].strip()
+        if not target:
+            return "Usage: /checkpoints <session-id|latest>"
+        if session is not None and target == getattr(session, "session_id", None):
+            return format_session_checkpoints(session)
+        target_session = _workspace_session(target)
+        if target_session is None:
+            return "No saved session found for checkpoint inspection."
+        return format_session_checkpoints(target_session)
+
+    if user_input == "/rewind-preview" or user_input.startswith("/rewind-preview "):
+        if session is None:
+            return "No active session."
+        target = user_input[len("/rewind-preview") :].strip()
+        steps = 1
+        checkpoint_id = None
+        if target and target != "latest":
+            if target.isdigit():
+                steps = max(1, int(target))
+            else:
+                checkpoint_id = target
+        return format_rewind_preview(
+            session,
+            steps=steps,
+            checkpoint_id=checkpoint_id,
+        )
+
+    if user_input == "/rewind" or user_input.startswith("/rewind "):
+        if session is None:
+            return "No active session."
+        target = user_input[len("/rewind") :].strip()
+        steps = 1
+        checkpoint_id = None
+        if target and target != "latest":
+            if target.isdigit():
+                steps = max(1, int(target))
+            else:
+                checkpoint_id = target
+        restored = rewind_session_data(
+            session,
+            steps=steps,
+            checkpoint_id=checkpoint_id,
+        )
+        if not restored:
+            return "No checkpoints available to rewind."
+        return _format_rewind_result(session, restored, "Rewound")
+
+    if user_input.startswith("/session-rewind "):
+        raw = user_input[len("/session-rewind ") :].strip()
+        if not raw:
+            return "Usage: /session-rewind <session-id|latest> [latest|steps|checkpoint-id]"
+        parts = raw.split(maxsplit=1)
+        target = parts[0]
+        rewind_arg = parts[1].strip() if len(parts) > 1 else "latest"
+        steps = 1
+        checkpoint_id = None
+        if rewind_arg and rewind_arg != "latest":
+            if rewind_arg.isdigit():
+                steps = max(1, int(rewind_arg))
+            else:
+                checkpoint_id = rewind_arg
+        if session is not None and target == getattr(session, "session_id", None):
+            restored = rewind_session_data(
+                session,
+                steps=steps,
+                checkpoint_id=checkpoint_id,
+            )
+            if not restored:
+                return "No checkpoints available to rewind for that session."
+            return _format_rewind_result(session, restored, "Rewound")
+        target_session = _workspace_session(target)
+        if target_session is None:
+            return "No saved session found to rewind."
+        rewound_session, restored = rewind_session(
+            target_session.session_id,
+            steps=steps,
+            checkpoint_id=checkpoint_id,
+        )
+        if rewound_session is None or not restored:
+            return "No checkpoints available to rewind for that session."
+        return _format_rewind_result(rewound_session, restored, "Rewound")
+
+    if user_input.startswith("/session-rewind-preview "):
+        raw = user_input[len("/session-rewind-preview ") :].strip()
+        if not raw:
+            return "Usage: /session-rewind-preview <session-id|latest> [latest|steps|checkpoint-id]"
+        parts = raw.split(maxsplit=1)
+        target = parts[0]
+        rewind_arg = parts[1].strip() if len(parts) > 1 else "latest"
+        steps = 1
+        checkpoint_id = None
+        if rewind_arg and rewind_arg != "latest":
+            if rewind_arg.isdigit():
+                steps = max(1, int(rewind_arg))
+            else:
+                checkpoint_id = rewind_arg
+        if session is not None and target == getattr(session, "session_id", None):
+            return format_rewind_preview(
+                session,
+                steps=steps,
+                checkpoint_id=checkpoint_id,
+            )
+        target_session = _workspace_session(target)
+        if target_session is None:
+            return "No saved session found to preview."
+        return format_rewind_preview(
+            target_session,
+            steps=steps,
+            checkpoint_id=checkpoint_id,
+        )
 
     if user_input == "/skills":
         skills = tools.get_skills() if tools else []
@@ -184,7 +703,6 @@ def try_handle_local_command(user_input: str, tools=None, cwd: str | None = None
         # Memory system display
         try:
             from minicode.memory import MemoryManager
-            from pathlib import Path
             memory_mgr = MemoryManager(project_root=Path(cwd) if cwd else Path.cwd())
             return memory_mgr.format_stats()
         except Exception as e:

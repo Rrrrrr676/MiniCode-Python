@@ -9,6 +9,7 @@ import pytest
 import minicode.tools.test_runner as test_runner_module
 import minicode.tools.run_command as run_command_module
 from minicode.permissions import PermissionManager
+from minicode.session import create_new_session, load_session
 from minicode.tools.batch_ops import batch_copy_tool, batch_move_tool
 from minicode.tools.code_nav import find_references_tool, find_symbols_tool, get_ast_info_tool
 from minicode.tools.code_review import code_review_tool
@@ -45,6 +46,28 @@ def test_write_file_tool_writes_after_review(tmp_path: Path) -> None:
 
     assert result.ok is True
     assert (tmp_path / "demo.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_write_file_tool_records_checkpoint_when_session_present(tmp_path: Path) -> None:
+    permissions = PermissionManager(str(tmp_path), prompt=lambda request: {"decision": "allow_once"})
+    target = tmp_path / "demo.txt"
+    target.write_text("before", encoding="utf-8")
+    session = create_new_session(workspace=str(tmp_path))
+
+    result = write_file_tool.run(
+        {"path": "demo.txt", "content": "after"},
+        ToolContext(cwd=str(tmp_path), permissions=permissions, session=session),
+    )
+
+    assert result.ok is True
+    assert target.read_text(encoding="utf-8") == "after"
+    assert len(session.checkpoints) == 1
+    assert session.checkpoints[0].file_path == str(target)
+    assert session.checkpoints[0].previous_content == "before"
+
+    loaded = load_session(session.session_id)
+    assert loaded is not None
+    assert loaded.metadata.checkpoint_count == 1
 
 
 def test_patch_file_tool_applies_multiple_replacements(tmp_path: Path) -> None:

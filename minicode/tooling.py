@@ -219,6 +219,7 @@ class ToolResult:
 class ToolContext:
     cwd: str
     permissions: Any | None = None
+    session: Any | None = None
     _runtime: dict | None = None
 
 

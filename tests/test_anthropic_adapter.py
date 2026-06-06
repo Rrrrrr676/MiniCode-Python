@@ -1,6 +1,9 @@
 import json
+import urllib.error
 
-from minicode.anthropic_adapter import AnthropicModelAdapter
+import pytest
+from minicode.anthropic_adapter import AnthropicModelAdapter, _messages_endpoint
+from minicode.model_registry import create_model_adapter
 from minicode.tooling import ToolDefinition, ToolRegistry
 
 
@@ -70,4 +73,65 @@ def test_anthropic_adapter_parses_final_text(monkeypatch) -> None:
     assert step.type == "assistant"
     assert step.content == "done"
     assert step.kind == "final"
+
+
+def test_messages_endpoint_normalizes_base_url_variants() -> None:
+    assert _messages_endpoint("https://api.anthropic.com") == "https://api.anthropic.com/v1/messages"
+    assert _messages_endpoint("https://proxy.example.com/v1") == "https://proxy.example.com/v1/messages"
+    assert _messages_endpoint("https://proxy.example.com/v1/messages") == "https://proxy.example.com/v1/messages"
+
+
+def test_anthropic_adapter_uses_normalized_messages_endpoint(monkeypatch) -> None:
+    payload = {
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "<final>ok</final>"}],
+    }
+    seen: dict[str, str] = {}
+
+    def _fake_urlopen(request, timeout=60):
+        seen["url"] = request.full_url
+        return DummyResponse(payload)
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    adapter = AnthropicModelAdapter(
+        {"model": "claude", "baseUrl": "https://proxy.example.com/v1", "authToken": "x"},
+        _tool_registry(),
+    )
+
+    step = adapter.next([{"role": "system", "content": "sys"}, {"role": "user", "content": "finish"}])
+
+    assert step.type == "assistant"
+    assert seen["url"] == "https://proxy.example.com/v1/messages"
+
+
+def test_anthropic_adapter_surfaces_underlying_url_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, timeout=60: (_ for _ in ()).throw(urllib.error.URLError("connection refused")),
+    )
+    monkeypatch.setenv("MINI_CODE_MAX_RETRIES", "0")
+    adapter = AnthropicModelAdapter(
+        {"model": "claude", "baseUrl": "https://proxy.example.com/v1", "authToken": "x"},
+        _tool_registry(),
+    )
+
+    with pytest.raises(RuntimeError, match="connection refused"):
+        adapter.next([{"role": "system", "content": "sys"}, {"role": "user", "content": "finish"}])
+
+
+def test_create_model_adapter_overrides_stale_anthropic_runtime_model() -> None:
+    runtime = {
+        "model": "deepseek-v4-pro[1m]",
+        "baseUrl": "https://proxy.example.com/v1",
+        "authToken": "x",
+    }
+
+    adapter = create_model_adapter(
+        "claude-haiku-3-20240307",
+        tools=_tool_registry(),
+        runtime=runtime,
+    )
+
+    assert isinstance(adapter, AnthropicModelAdapter)
+    assert adapter.runtime["model"] == "claude-haiku-3-20240307"
 
