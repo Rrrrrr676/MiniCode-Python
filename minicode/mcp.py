@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import threading
 from dataclasses import asdict, dataclass
@@ -23,6 +24,10 @@ ALLOWED_COMMANDS = {
     'uv', 'deno', 'bun', 'cargo', 'go', 'java', 'javac',
     'ruby', 'gem', 'dotnet', 'curl', 'wget',
 }
+
+# Windows 可执行后缀。node 工具链的 npx/npm 等以 .cmd 批处理包装器形式存在，
+# 校验白名单前需要剥离这些后缀，否则 "npx.cmd" 会被误判为不在白名单中。
+_WIN_EXEC_EXTS = (".exe", ".cmd", ".bat")
 
 
 JsonRpcProtocol = str
@@ -56,11 +61,12 @@ def _validate_mcp_command(command: str) -> None:
     if '..' in normalized or '~' in normalized:
         raise RuntimeError("Invalid MCP command: contains path traversal characters")
     
-    # 提取命令的基本名称
+    # 提取命令的基本名称，剥离 Windows 可执行后缀（.exe/.cmd/.bat）
     base_command = Path(command).name.lower()
-    # 处理 .exe 后缀
-    if base_command.endswith('.exe'):
-        base_command = base_command[:-4]
+    for _exec_ext in _WIN_EXEC_EXTS:
+        if base_command.endswith(_exec_ext):
+            base_command = base_command[: -len(_exec_ext)]
+            break
     
     # 如果是绝对路径，需要额外验证
     if Path(command).is_absolute():
@@ -122,6 +128,29 @@ def _validate_mcp_args(args: list[str]) -> None:
                     f"Invalid MCP argument: contains dangerous shell character '{char}'. "
                     f"MCP server arguments cannot contain shell metacharacters for security reasons."
                 )
+
+
+def _prepare_spawn(command: str, args: list[str]) -> tuple[list[str] | str, dict]:
+    """把 MCP 命令解析成可被 subprocess 启动的形式。
+
+    Windows 上 npx/npm 等是 ``.cmd`` 批处理包装器。``subprocess`` 在 ``shell=False``
+    时底层走 ``CreateProcess``，它既不能直接运行 ``.cmd``/``.bat``，又不会按 PATHEXT
+    搜索，于是裸命令 ``npx`` 会被当成不存在的 ``npx.exe``，报“命令未找到: npx”
+    （GitHub issue #7）。这里用 :func:`shutil.which`（遵循 PATHEXT）解析出真正的
+    可执行文件，并把批处理包装器通过 ``cmd.exe``（即 ``shell=True``）启动。参数已经
+    过 :func:`_validate_mcp_args` 校验不含 shell 元字符，因此 ``shell=True`` 是安全的。
+
+    返回 ``(spawn_exec, extra_popen_kwargs)``：``spawn_exec`` 在 ``shell=False`` 时为
+    列表，在 ``shell=True`` 时为单条命令行字符串。
+    """
+    if os.name == "nt":
+        resolved = shutil.which(command)
+        if resolved:
+            if resolved.lower().endswith((".cmd", ".bat")):
+                # 批处理包装器需要 cmd.exe 解释执行
+                return subprocess.list2cmdline([resolved, *args]), {"shell": True}
+            return [resolved, *args], {}
+    return [command, *args], {}
 
 
 def _normalize_input_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
@@ -304,9 +333,13 @@ class StdioMcpClient:
             # Prevent a console window from popping up for the child process
             CREATE_NO_WINDOW = 0x08000000
             popen_kwargs["creationflags"] = CREATE_NO_WINDOW
+
+        spawn_args = list(self.config.get("args", []) or [])
+        spawn_exec, spawn_extra = _prepare_spawn(command, spawn_args)
+        popen_kwargs.update(spawn_extra)
         try:
             self.process = subprocess.Popen(  # noqa: S603
-                [command, *list(self.config.get("args", []) or [])],
+                spawn_exec,
                 cwd=str(process_cwd),
                 env=env,
                 stdin=subprocess.PIPE,

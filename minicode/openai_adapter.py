@@ -11,7 +11,8 @@ import os
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Any, Callable, Literal
 
 from minicode.api_retry import RETRYABLE_STATUS, calculate_backoff
 from minicode.cost_tracker import calculate_cost
@@ -19,7 +20,8 @@ from minicode.state import Store, AppState, add_cost, record_api_error, update_c
 from minicode.types import AgentStep, StepDiagnostics
 
 DEFAULT_MAX_RETRIES = 4
-OPENAI_MODELS = {"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o1-mini", "o3-mini"}
+OPENAI_MODELS = {"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-5.5", "gpt5.5", "o1", "o1-mini", "o3-mini"}
+DEFAULT_OPENAI_USER_AGENT = "MiniCode-Python/0.5.0 (OpenAI-Compatible Adapter)"
 
 
 def _is_openai_model(model: str) -> bool:
@@ -29,7 +31,7 @@ def _is_openai_model(model: str) -> bool:
     if model_lower in OPENAI_MODELS:
         return True
     # Prefix match for versioned models
-    for prefix in ("gpt-4", "gpt-3.5", "o1-", "o3-", "chatgpt-"):
+    for prefix in ("gpt-5", "gpt-4", "gpt-3.5", "gpt5", "o1-", "o3-", "chatgpt-"):
         if model_lower.startswith(prefix):
             return True
     # Check if explicitly using OpenAI base URL
@@ -39,22 +41,70 @@ def _is_openai_model(model: str) -> bool:
     return False
 
 
-def _get_openai_base_url(runtime: dict) -> str:
+def _get_openai_base_url(runtime: dict[str, Any]) -> str:
     """Get OpenAI-compatible base URL."""
     return (
-        os.environ.get("OPENAI_BASE_URL", "")
+        runtime.get("openaiBaseUrl", "")
+        or os.environ.get("OPENAI_BASE_URL", "")
         or os.environ.get("OPENAI_API_BASE", "")
-        or runtime.get("openaiBaseUrl", "")
         or "https://api.openai.com"
     ).rstrip("/")
 
 
-def _get_openai_api_key(runtime: dict) -> str:
+def _get_openai_chat_completions_url(runtime: dict[str, Any]) -> str:
+    base_url = _get_openai_base_url(runtime)
+    if base_url.endswith("/chat/completions"):
+        return base_url
+    if base_url.endswith("/v1"):
+        return f"{base_url}/chat/completions"
+    return f"{base_url}/v1/chat/completions"
+
+
+def _get_openai_api_key(runtime: dict[str, Any]) -> str:
     """Get OpenAI API key."""
     return (
-        os.environ.get("OPENAI_API_KEY", "")
-        or runtime.get("openaiApiKey", "")
+        runtime.get("openaiApiKey", "")
+        or os.environ.get("OPENAI_API_KEY", "")
     )
+
+
+def _parse_openai_response_body(response: Any) -> tuple[dict[str, Any], str]:
+    """Parse an OpenAI-compatible response body with a text fallback."""
+    raw_body = response.read()
+    decoded = raw_body.decode("utf-8", errors="replace")
+    if not decoded.strip():
+        return {}, ""
+    try:
+        return json.loads(decoded), decoded
+    except json.JSONDecodeError:
+        return {}, decoded
+
+
+@dataclass
+class _BufferedHTTPResponse:
+    status: int
+    code: int
+    headers: Any
+    body: bytes
+
+    def read(self) -> bytes:
+        return self.body
+
+
+def _is_non_retryable_openai_error(status: int, data: dict[str, Any], raw_text: str) -> bool:
+    if status < 500:
+        return False
+    error_block = data.get("error", {}) if isinstance(data, dict) else {}
+    code = str(error_block.get("code", "")).lower()
+    message = str(error_block.get("message", "") or raw_text).lower()
+    permanent_markers = (
+        "model_not_found",
+        "no available channel",
+        "insufficient_quota",
+        "monthly usage limit reached",
+        "invalid api key",
+    )
+    return any(marker in code or marker in message for marker in permanent_markers)
 
 
 def _to_openai_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
@@ -112,12 +162,15 @@ def _to_openai_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[
     return system_message, converted
 
 
-def _parse_assistant_text(content: str) -> tuple[str, str | None]:
+AssistantTextKind = Literal["final", "progress"]
+
+
+def _parse_assistant_text(content: str) -> tuple[str, AssistantTextKind | None]:
     """Parse progress/final markers from assistant text."""
     trimmed = content.strip()
     if not trimmed:
         return "", None
-    markers = [
+    markers: list[tuple[str, AssistantTextKind, str | None]] = [
         ("<final>", "final", "</final>"),
         ("[FINAL]", "final", None),
         ("<progress>", "progress", "</progress>"),
@@ -184,13 +237,13 @@ class OpenAIModelAdapter:
         if on_stream_chunk:
             request_body["stream"] = True
         
-        base_url = _get_openai_base_url(self.runtime)
         api_key = _get_openai_api_key(self.runtime)
         
         # Build headers — support OpenRouter and custom endpoints
         headers = {
             "content-type": "application/json",
             "Authorization": f"Bearer {api_key}",
+            "User-Agent": DEFAULT_OPENAI_USER_AGENT,
         }
         # OpenRouter extra headers (HTTP-Referer, X-Title)
         openrouter_headers = self.runtime.get("_openrouter_headers", {})
@@ -206,7 +259,7 @@ class OpenAIModelAdapter:
                 request_body[k] = v
 
         request = urllib.request.Request(
-            url=f"{base_url}/v1/chat/completions",
+            url=_get_openai_chat_completions_url(self.runtime),
             data=json.dumps(request_body).encode("utf-8"),
             headers=headers,
             method="POST",
@@ -221,8 +274,19 @@ class OpenAIModelAdapter:
                 response = urllib.request.urlopen(request, timeout=timeout)
                 break
             except urllib.error.HTTPError as error:
-                response = error
-                if error.code not in RETRYABLE_STATUS or attempt >= max_retries:
+                buffered_error = _BufferedHTTPResponse(
+                    status=error.code,
+                    code=error.code,
+                    headers=getattr(error, "headers", None),
+                    body=error.read(),
+                )
+                response = buffered_error
+                parsed_error, raw_error_text = _parse_openai_response_body(buffered_error)
+                if (
+                    error.code not in RETRYABLE_STATUS
+                    or attempt >= max_retries
+                    or _is_non_retryable_openai_error(error.code, parsed_error, raw_error_text)
+                ):
                     break
                 from minicode.api_retry import classify_error
                 category = classify_error(error)
@@ -239,14 +303,22 @@ class OpenAIModelAdapter:
         
         if not on_stream_chunk:
             # Non-streaming response
-            data = json.loads(response.read().decode("utf-8"))
+            data, raw_text = _parse_openai_response_body(response)
             status = getattr(response, "status", getattr(response, "code", 200))
             
             if status >= 400:
                 if store:
                     store.set_state(record_api_error())
-                error_msg = data.get("error", {}).get("message", f"OpenAI API error: {status}")
+                error_msg = (
+                    data.get("error", {}).get("message")
+                    or raw_text.strip()
+                    or f"OpenAI API error: {status}"
+                )
                 raise RuntimeError(error_msg)
+            if not data:
+                raise RuntimeError(
+                    "OpenAI-compatible endpoint returned a non-JSON success payload."
+                )
             
             # Cost tracking
             if store:
@@ -254,7 +326,7 @@ class OpenAIModelAdapter:
                 input_tokens = usage.get("prompt_tokens", 0)
                 output_tokens = usage.get("completion_tokens", 0)
                 cost_usd = calculate_cost(
-                    model=self.runtime["model"],
+                    model=self.runtime.get("model", ""),
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                 )
@@ -306,9 +378,20 @@ class OpenAIModelAdapter:
             return AgentStep(type="assistant", content=parsed_text, kind=kind, diagnostics=diagnostics)
         
         # Streaming response
+        if isinstance(response, _BufferedHTTPResponse):
+            data, raw_text = _parse_openai_response_body(response)
+            if store:
+                store.set_state(record_api_error())
+            error_msg = (
+                data.get("error", {}).get("message")
+                or raw_text.strip()
+                or f"OpenAI API error: {response.status}"
+            )
+            raise RuntimeError(error_msg)
+
         tool_calls = []
         text_parts = []
-        active_tool_calls: dict[int, dict] = {}
+        active_tool_calls: dict[int, dict[str, Any]] = {}
         stop_reason = None
         stream_input_tokens = 0
         stream_output_tokens = 0
@@ -386,7 +469,7 @@ class OpenAIModelAdapter:
                 stream_output_tokens = len("".join(text_parts)) // 4
             
             cost_usd = calculate_cost(
-                model=self.runtime["model"],
+                model=self.runtime.get("model", ""),
                 input_tokens=stream_input_tokens,
                 output_tokens=stream_output_tokens,
             )

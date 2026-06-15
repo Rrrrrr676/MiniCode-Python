@@ -2,8 +2,10 @@ from __future__ import annotations
 
 
 def parse_local_tool_shortcut(user_input: str) -> dict | None:
-    if user_input.startswith("/ls"):
-        directory = user_input.replace("/ls", "", 1).strip()
+    # `/ls` must be an exact command or followed by a space, so that adjacent
+    # text like `/lsfoo` is NOT misparsed as a list_files shortcut (TS parity).
+    if user_input == "/ls" or user_input.startswith("/ls "):
+        directory = user_input[len("/ls") :].strip()
         return {"toolName": "list_files", "input": {"path": directory} if directory else {}}
 
     if user_input.startswith("/grep "):
@@ -23,7 +25,7 @@ def parse_local_tool_shortcut(user_input: str) -> dict | None:
     if user_input.startswith("/write "):
         payload = user_input[len("/write ") :]
         target_path, separator, content = payload.partition("::")
-        if not separator:
+        if not separator or not target_path.strip():
             return None
         return {
             "toolName": "write_file",
@@ -33,7 +35,7 @@ def parse_local_tool_shortcut(user_input: str) -> dict | None:
     if user_input.startswith("/modify "):
         payload = user_input[len("/modify ") :]
         target_path, separator, content = payload.partition("::")
-        if not separator:
+        if not separator or not target_path.strip():
             return None
         return {
             "toolName": "modify_file",
@@ -43,7 +45,7 @@ def parse_local_tool_shortcut(user_input: str) -> dict | None:
     if user_input.startswith("/edit "):
         payload = user_input[len("/edit ") :]
         parts = payload.split("::")
-        if len(parts) != 3:
+        if len(parts) != 3 or not parts[0].strip():
             return None
         target_path, search, replace = parts
         return {

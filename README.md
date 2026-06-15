@@ -181,7 +181,7 @@ Current local verification result:
 Verification command:
 
 ```bash
-python -m compileall -q minicode py-src\minicode tests
+python -m compileall -q minicode tests
 pytest -q
 ```
 
@@ -231,7 +231,6 @@ What matters is not the diagram itself. What matters is that runtime state is tr
 | `docs/` | Architecture notes, optimization history, and productization reports. |
 | `openspec/` | Specs, archived change records, and build/verify planning artifacts. |
 | `.mini-code-memory/` | Workspace-level durable memory state created by the runtime. |
-| `py-src/minicode/` | Compatibility and migration mirror. |
 
 ## Core Modules
 

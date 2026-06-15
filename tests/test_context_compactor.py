@@ -188,6 +188,19 @@ class TestToolResultBudgetManager:
         assert "[Tool result persisted to disk" in modified[1]["content"]
         assert "_persisted_path" in modified[1]
 
+    def test_none_and_non_string_content_does_not_crash(self, tmp_path):
+        """tool_result content can be None (no output) or non-string (structured).
+        check_and_replace must coerce it instead of crashing on len(None)."""
+        mgr = ToolResultBudgetManager(workspace=tmp_path, persist_threshold=1000)
+        messages = [
+            {"role": "tool_result", "toolName": "run_command", "content": None, "toolUseId": "n"},
+            {"role": "tool_result", "toolName": "run_command", "content": ["a", "b"], "toolUseId": "l"},
+        ]
+        modified, saved = mgr.check_and_replace(messages)  # must not raise
+
+        assert modified[0]["content"] == ""           # None -> ""
+        assert isinstance(modified[1]["content"], str)  # list coerced to str
+
     def test_persisted_count_tracked(self, tmp_path):
         mgr = ToolResultBudgetManager(workspace=tmp_path, persist_threshold=10)
         messages = [
@@ -543,6 +556,25 @@ class TestAutoCompactDispatcher:
         assert dispatcher.is_tripped is True
         dispatcher.reset_circuit_breaker()
         assert dispatcher.is_tripped is False
+
+    def test_circuit_breaker_auto_recovers_after_timeout(self):
+        """Without auto-recovery, a tripped breaker disables auto-compaction for
+        the whole session (should_trigger stays False, _on_success never runs).
+        After circuit_breaker_recovery_seconds, should_trigger must re-open
+        (half-open) and be able to fire again. is_tripped stays a pure check."""
+        config = AutoCompactConfig(
+            circuit_breaker_limit=2,
+            circuit_breaker_recovery_seconds=0.01,
+        )
+        dispatcher = AutoCompactDispatcher(context_window=100, config=config)
+        dispatcher._on_failure()
+        dispatcher._on_failure()
+        assert dispatcher.is_tripped is True  # pure read, no side effect
+        time.sleep(0.03)
+        # Past the timeout: should_trigger recovers + fires on high usage.
+        big = [{"role": "user", "content": "x" * 9999}]  # usage >> threshold (85)
+        assert dispatcher.should_trigger(big) is True
+        assert dispatcher._consecutive_failures == 0  # recovered
 
     def test_disabled_auto_compact_never_triggers(self):
         config = AutoCompactConfig(enabled=False)

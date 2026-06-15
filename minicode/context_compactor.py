@@ -139,6 +139,7 @@ class AutoCompactConfig:
     enabled: bool = True
     threshold_ratio: float = 0.85  # 85% of context window
     circuit_breaker_limit: int = 3
+    circuit_breaker_recovery_seconds: float = 300.0  # auto-recover after this long
     session_memory_enabled: bool = True
     min_keep_tokens: int = 10000  # At least 10k tokens after compact
     min_keep_messages: int = 5  # At least 5 text messages
@@ -192,7 +193,14 @@ class ToolResultBudgetManager:
             if msg.get("role") != "tool_result":
                 continue
 
-            content = msg.get("content", "")
+            content = msg.get("content")
+            # Normalize content to a string — tool_result content can be None
+            # (no output) or a non-string (structured result). Without this,
+            # len(None) / len(list) crashes or mis-sizes (TS normalizes these).
+            if not isinstance(content, str):
+                content = "" if content is None else str(content)
+                modified[i] = {**msg, "content": content}
+                msg = modified[i]
             content_size = len(content)
 
             if content_size <= self._persist_threshold:
@@ -610,6 +618,7 @@ class AutoCompactDispatcher:
         self._memory = memory_manager
         self._estimate = estimate_fn or (lambda m: len(str(m)) // 4)
         self._consecutive_failures = 0
+        self._last_failure_time: float = 0.0
         self._boundaries: list[CompactBoundary] = []
         self._suppressed_until: float = 0.0  # Warning suppression after compact
         self._session_memory_engine = SessionMemoryCompactEngine(memory_manager)
@@ -625,7 +634,32 @@ class AutoCompactDispatcher:
 
     @property
     def is_tripped(self) -> bool:
+        """Pure predicate: are we at/over the failure threshold? No side effects
+        (callers like ReactiveCompactEngine read this as a plain check)."""
         return self._consecutive_failures >= self._config.circuit_breaker_limit
+
+    def _maybe_auto_recover(self) -> bool:
+        """If tripped but past the recovery timeout, reset to half-open.
+
+        Returns True if a recovery reset just happened. Without this, once
+        tripped, ``should_trigger`` always returns False, ``_on_success`` never
+        runs, and the breaker stays open for the whole session.
+        """
+        if self._consecutive_failures < self._config.circuit_breaker_limit:
+            return False
+        recovery = self._config.circuit_breaker_recovery_seconds
+        if (
+            recovery > 0
+            and self._last_failure_time > 0
+            and time.time() - self._last_failure_time >= recovery
+        ):
+            self._consecutive_failures = 0
+            self._last_failure_time = 0.0
+            logger.info(
+                "Auto Compact circuit breaker auto-recovered after %.0fs", recovery
+            )
+            return True
+        return False
 
     def should_trigger(
         self,
@@ -636,7 +670,10 @@ class AutoCompactDispatcher:
         if not self._config.enabled:
             return False
         if self.is_tripped:
-            return False
+            # Half-open auto-recovery: if past the recovery timeout, allow a
+            # retry; otherwise stay blocked.
+            if not self._maybe_auto_recover():
+                return False
 
         usage = token_usage or sum(self._estimate(m) for m in messages)
         return usage >= self.threshold_tokens
@@ -805,6 +842,7 @@ class AutoCompactDispatcher:
 
     def _on_failure(self) -> None:
         self._consecutive_failures += 1
+        self._last_failure_time = time.time()
         logger.warning(
             "Auto Compact failure #%d/%d (circuit breaker)",
             self._consecutive_failures,

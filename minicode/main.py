@@ -101,6 +101,16 @@ def _make_cli_permission_prompt():
 
 
 def _configure_stdio_for_unicode() -> None:
+    stdin_reconfigure = getattr(sys.stdin, "reconfigure", None)
+    if stdin_reconfigure is not None:
+        try:
+            # PowerShell pipelines may prefix UTF-8 BOM bytes on stdin. Decode
+            # with utf-8-sig so local slash commands are not polluted by BOM
+            # artifacts like "锘?/memory" and accidentally routed to the model.
+            stdin_reconfigure(encoding="utf-8-sig", errors="replace")
+        except Exception:
+            pass
+
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
@@ -307,14 +317,22 @@ def main() -> None:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Set logging level (default: WARNING)",
     )
+    parser.add_argument(
+        "--structured-logs",
+        action="store_true",
+        help="Emit JSON structured logs (also enabled via MINI_CODE_LOG_STRUCTURED=true)",
+    )
 
     args, remaining_argv = parser.parse_known_args()
     if remaining_argv and not any(not arg.startswith("--") for arg in remaining_argv):
         parser.error(f"unrecognized arguments: {' '.join(remaining_argv)}")
 
     # Initialize logging
-    from minicode.logging_config import setup_logging
-    setup_logging(level=args.log_level)
+    from minicode.logging_config import setup_logging, structured_logging_requested
+    setup_logging(
+        level=args.log_level,
+        structured=structured_logging_requested(cli_flag=args.structured_logs),
+    )
 
     # Run config validation if requested
     if args.validate_config:

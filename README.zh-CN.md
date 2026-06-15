@@ -181,7 +181,7 @@ flowchart LR
 验证命令：
 
 ```bash
-python -m compileall -q minicode py-src\minicode tests
+python -m compileall -q minicode tests
 pytest -q
 ```
 
@@ -231,7 +231,6 @@ flowchart LR
 | `docs/` | 架构说明、优化记录和产品化报告。 |
 | `openspec/` | spec、归档变更记录，以及 build/verify 规划产物。 |
 | `.mini-code-memory/` | runtime 创建的 workspace 级持久记忆状态。 |
-| `py-src/minicode/` | 兼容与迁移镜像。 |
 
 ## Core Modules
 

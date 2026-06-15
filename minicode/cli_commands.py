@@ -52,6 +52,7 @@ SLASH_COMMANDS = [
     SlashCommand("/config", "/config", "Show configuration diagnostics and validation."),
     SlashCommand("/history", "/history", "Show recent prompt history from ~/.mini-code/history.json."),
     SlashCommand("/clear", "/clear", "Clear the current transcript view."),
+    SlashCommand("/collapse", "/collapse", "Collapse all expanded tool-output blocks in the transcript."),
     SlashCommand("/retry", "/retry", "Retry the last natural-language prompt in this session."),
     SlashCommand("/session", "/session", "Inspect the active session, runtime, checkpoints, and recent transcript."),
     SlashCommand("/session", "/session <session-id|latest>", "Inspect a saved session for the current workspace."),

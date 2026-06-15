@@ -111,3 +111,73 @@ def test_client_reconnects_after_process_exit(tmp_path: Path) -> None:
     assert client.process is not None
     assert client.process.pid != original_pid
     client.close()
+
+
+# ---------------------------------------------------------------------------
+# Windows MCP command fixes (GitHub issue #7, point 1)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_mcp_command_accepts_windows_cmd_wrappers() -> None:
+    """npx/npm ship as .cmd wrappers on Windows and must pass the whitelist."""
+    from minicode.mcp import _validate_mcp_command
+
+    # Bare name (as shipped in .mcp.json) must work out of the box.
+    _validate_mcp_command("npx")
+    # Explicit Windows wrappers must also pass without hand-editing config.
+    _validate_mcp_command("npx.cmd")
+    _validate_mcp_command("npm.bat")
+
+    # Non-whitelisted commands — even with a Windows extension — must be rejected.
+    with pytest.raises(RuntimeError):
+        _validate_mcp_command("evil.cmd")
+    with pytest.raises(RuntimeError):
+        _validate_mcp_command("rm.exe")
+
+
+def test_prepare_spawn_routes_cmd_wrapper_through_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_module.os, "name", "nt")
+    monkeypatch.setattr(mcp_module.shutil, "which", lambda cmd: r"C:\nodejs\npx.cmd")
+
+    spawn_exec, extra = mcp_module._prepare_spawn("npx", ["-y", "pkg"])
+
+    assert extra == {"shell": True}
+    assert isinstance(spawn_exec, str)
+    assert "npx.cmd" in spawn_exec
+
+
+def test_prepare_spawn_keeps_list_for_real_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_module.os, "name", "nt")
+    monkeypatch.setattr(mcp_module.shutil, "which", lambda cmd: r"C:\nodejs\node.exe")
+
+    spawn_exec, extra = mcp_module._prepare_spawn("node", ["server.js"])
+
+    assert extra == {}
+    assert spawn_exec == [r"C:\nodejs\node.exe", "server.js"]
+
+
+def test_prepare_spawn_passthrough_when_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_module.os, "name", "nt")
+    monkeypatch.setattr(mcp_module.shutil, "which", lambda cmd: None)
+
+    spawn_exec, extra = mcp_module._prepare_spawn("missing-cmd", ["a"])
+
+    assert extra == {}
+    assert spawn_exec == ["missing-cmd", "a"]
+
+
+def test_prepare_spawn_is_list_on_posix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_module.os, "name", "posix")
+
+    spawn_exec, extra = mcp_module._prepare_spawn("npx", ["-y", "pkg"])
+
+    assert extra == {}
+    assert spawn_exec == ["npx", "-y", "pkg"]
