@@ -648,6 +648,14 @@ class MemoryEntry:
     related_to: list[str] = field(default_factory=list)  # Related memory IDs
     _cached_tokens: list[str] | None = field(default=None, repr=False)
 
+    def __post_init__(self) -> None:
+        # `content` is accessed as a str throughout search/scoring/formatting
+        # (8+ sites use .lower()/.strip()/[:N]); coerce None/non-str at
+        # construction so a malformed entry can't crash a memory search, which
+        # is injected into every system prompt.
+        if not isinstance(self.content, str):
+            self.content = "" if self.content is None else str(self.content)
+
     def __hash__(self) -> int:
         return hash(self.id)
 

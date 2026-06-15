@@ -1180,3 +1180,26 @@ class TestCrossCuttingMemoryIntegration:
             mm.add_entry(MemoryScope.PROJECT, "test", f"Entry {i}")
 
         assert len(mm.memories[MemoryScope.PROJECT].entries) <= max_entries
+
+
+# ---------------------------------------------------------------------------
+# Robustness: None / non-str content must not crash search (injected into prompts)
+# ---------------------------------------------------------------------------
+
+
+def test_memory_entry_coerces_none_content():
+    """MemoryEntry.content is accessed as str in 8+ places (.lower()/.strip());
+    construction must coerce None/non-str so a malformed entry can't crash a
+    memory search (which runs on every system-prompt build)."""
+    assert MemoryEntry(id="a", content=None, scope=MemoryScope.PROJECT, category="c").content == ""
+    assert MemoryEntry(id="b", content=123, scope=MemoryScope.PROJECT, category="c").content == "123"
+
+
+def test_search_survives_none_content_entry(tmp_path):
+    mgr = MemoryManager(project_root=tmp_path)
+    mf = mgr.memories[MemoryScope.PROJECT]
+    mf.entries.append(MemoryEntry(id="bad", content=None, scope=MemoryScope.PROJECT, category="c"))
+    mf.entries.append(MemoryEntry(id="good", content="how to run the test suite", scope=MemoryScope.PROJECT, category="convention"))
+    # Must not raise; the good entry is still searchable.
+    results = mgr.search("run the test suite")
+    assert any("test suite" in e.content for e in results)
