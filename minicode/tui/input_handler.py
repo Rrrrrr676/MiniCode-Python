@@ -335,6 +335,26 @@ def _handle_input(
         )
         return False
 
+    # /collapse — collapse every expanded tool-output block in the transcript
+    if input_text == "/collapse":
+        collapsed = 0
+        for entry in state.transcript:
+            if getattr(entry, "kind", None) == "tool" and not getattr(entry, "collapsed", False):
+                entry.collapsed = True
+                if not getattr(entry, "collapsedSummary", None):
+                    entry.collapsedSummary = "output collapsed"
+                collapsed += 1
+        _push_transcript_entry(
+            state,
+            kind="assistant",
+            body=(
+                f"Collapsed {collapsed} tool-output block(s)."
+                if collapsed
+                else "No expanded tool-output blocks to collapse."
+            ),
+        )
+        return False
+
     # Local commands
     if state.session is not None:
         refresh_tty_session_snapshot(args, state)
