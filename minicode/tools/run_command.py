@@ -18,6 +18,41 @@ COMMAND_TIMEOUT = 300
 MAX_OUTPUT_CHARS = 200_000
 
 
+def _command_output_encoding() -> str:
+    """Encoding used to decode command output.
+
+    Override with the ``MINICODE_COMMAND_ENCODING`` env var — e.g. set it to
+    ``cp936`` (or ``gbk``) on Chinese Windows where legacy commands (``dir``,
+    ``systeminfo``, batch scripts printing CJK) output in the OEM code page and
+    would otherwise garble under the UTF-8 default. Defaults to ``utf-8``
+    (modern tools, and Python with ``PYTHONUTF8=1``).
+
+    A single global encoding can't be perfect for mixed output (a ``cp936``
+    override will garble UTF-8 tools, and vice-versa) — pick whichever matches
+    the majority of the commands you run.
+    """
+    return os.environ.get("MINICODE_COMMAND_ENCODING", "utf-8").strip() or "utf-8"
+
+
+def _decode_command_output(data: bytes | str | None) -> str:
+    """Decode subprocess output bytes using the configured command encoding.
+
+    Never raises: an unknown encoding name or a decode failure falls back to
+    UTF-8 with replacement chars so a bad ``MINICODE_COMMAND_ENCODING`` value
+    can't crash command execution.
+    """
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    encoding = _command_output_encoding()
+    try:
+        return data.decode(encoding)
+    except (UnicodeDecodeError, LookupError):
+        return data.decode("utf-8", errors="replace")
+
+
+
 def _truncate_large_output(output: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
     """Truncate very large command output to prevent context bloat."""
     if len(output) <= max_chars:
@@ -338,7 +373,7 @@ def _run(input_data: dict, context) -> ToolResult:
                 if not timed_out:
                     process.wait()
                 
-            output_str = output_bytes.decode("utf-8", errors="replace").strip()
+            output_str = _decode_command_output(bytes(output_bytes)).strip()
             output_str = output_str.replace("\r\n", "\n")
             output_str = _truncate_large_output(output_str)
             
@@ -359,19 +394,21 @@ def _run(input_data: dict, context) -> ToolResult:
             cwd=effective_cwd,
             env=os.environ.copy(),
             capture_output=True,
-            text=True,
-            encoding="utf-8",  # 显式指定 UTF-8
-            errors="replace",   # 无法解码时替换字符而非报错
             check=False,
             timeout=effective_timeout,
         )
-        output = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part).strip()
+        output = "\n".join(
+            part for part in [
+                _decode_command_output(completed.stdout).strip(),
+                _decode_command_output(completed.stderr).strip(),
+            ] if part
+        ).strip()
         output = _truncate_large_output(output)
         return ToolResult(ok=completed.returncode == 0, output=output)
     except subprocess.TimeoutExpired as e:
         # Capture partial output from timeout
-        partial_stdout = (e.stdout or "").strip() if e.stdout else ""
-        partial_stderr = (e.stderr or "").strip() if e.stderr else ""
+        partial_stdout = _decode_command_output(e.stdout).strip()
+        partial_stderr = _decode_command_output(e.stderr).strip()
         partial = "\n".join(part for part in [partial_stdout, partial_stderr] if part)
         if partial:
             partial = f"\nPartial output:\n{_truncate_large_output(partial)}"
