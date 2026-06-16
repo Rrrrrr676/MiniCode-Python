@@ -46,10 +46,37 @@ Thumbs.db
 # Logs
 *.log
 
+# Local secrets and provider credentials
+.env
+.env.*
+!.env.example
+paper_experiments/*.env
+paper_experiments/*.env.local
+paper_experiments/.secrets/
+!paper_experiments/env.local.example
+paper_experiments/results/relative_event_target_pairs_cache.json
+
 # Temporary files
 *.tmp
 *.bak
+*.orig
+*.swp
+tmp_*.json
+tmp_*.py
+tmp_*.log
+
+# Local tool/runtime state
+.claude/settings.local.json
+.omx/
+.playwright-mcp/
+.mini-code-memory/*.json
 
 # MiniCode specific
 .mini-code/
 minicode_session/
+
+# Local caches / runtime tool state / dead backups (never commit)
+.qwen/
+__pycache__/
+*.git.bak/
+.dead-modules-backup/
