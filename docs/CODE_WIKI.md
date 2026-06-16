@@ -2,6 +2,8 @@
 
 > MiniCode —— 轻量、开源、多语言实现的 AI 编码代理（Agent），灵感源自 Claude Code。
 
+> ⚠️ **部分内容过时（2026-06-16）**：本文档的部分目录树与模块清单描述的是早期 `py-src/minicode/` 镜像，该镜像及其 `gateway.py`/`protocol.py`/`safe_execution.py`/`cron_runner.py`/`agent_protocol.py`/`context_isolation.py` 已在产品化中移除。**当前规范实现是仓库根目录的 `minicode/` 包**，以实际文件为准。本文保留作历史参考，不再逐行同步。
+
 ---
 
 ## 1. 项目概述 (Project Overview)
