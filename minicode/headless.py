@@ -50,11 +50,44 @@ def _write_headless_messages_trace(
     )
 
 
-def run_headless(prompt: str | None = None) -> str:
+def _allow_edits_requested(cli_flag: bool = False) -> bool:
+    """True if headless should auto-approve edits/commands/out-of-cwd access.
+
+    Opt-in, non-interactive CI mode. Gated by the --allow-edits flag or the
+    MINI_CODE_ALLOW_EDITS env var (1/true/yes/on)."""
+    if cli_flag:
+        return True
+    return os.getenv("MINI_CODE_ALLOW_EDITS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _make_auto_approve_prompt():
+    """Build a non-interactive permission prompt that grants every request for
+    the current run. Decisions are session-scoped (no persistence to the
+    permission store): edits via allow_all_turn, paths/commands via allow_once.
+    """
+
+    def _auto_approve(request: dict) -> dict:
+        if request.get("kind") == "edit":
+            return {"decision": "allow_all_turn"}
+        return {"decision": "allow_once"}
+
+    return _auto_approve
+
+
+def run_headless(prompt: str | None = None, allow_edits: bool = False) -> str:
     """Run a single agent turn in headless mode and return the response.
 
     Args:
         prompt: The user message to send. If None, reads from stdin.
+        allow_edits: If True (or via MINI_CODE_ALLOW_EDITS), auto-approve file
+            edits, commands, and out-of-cwd access for this non-interactive run.
+            Required for headless to modify files (edits otherwise need TTY
+            approval).
 
     Returns:
         The assistant's response text.
@@ -66,9 +99,12 @@ def run_headless(prompt: str | None = None) -> str:
     from minicode.permissions import PermissionManager
     from minicode.prompt import build_system_prompt
     from minicode.tools import create_default_tool_registry
-    from minicode.logging_config import setup_logging, get_logger
+    from minicode.logging_config import setup_logging, get_logger, structured_logging_requested
 
-    setup_logging(level=os.environ.get("MINI_CODE_LOG_LEVEL", "WARNING"))
+    setup_logging(
+        level=os.environ.get("MINI_CODE_LOG_LEVEL", "WARNING"),
+        structured=structured_logging_requested(),
+    )
     logger = get_logger("headless")
 
     # Read prompt from stdin if not provided
@@ -89,12 +125,21 @@ def run_headless(prompt: str | None = None) -> str:
     try:
         runtime = load_runtime_config(cwd)
     except Exception as exc:  # noqa: BLE001
+        # Persist the failure to the log file (issue #5), not just stderr.
+        logger.error("Config load failed: %s", exc, exc_info=True)
         print(f"Config error: {exc}", file=sys.stderr)
         sys.exit(1)
 
     # Initialize components
     tools = create_default_tool_registry(cwd, runtime=runtime)
-    permissions = PermissionManager(cwd, prompt=None)
+    auto_approve = _allow_edits_requested(cli_flag=allow_edits)
+    if auto_approve:
+        logger.warning(
+            "Headless --allow-edits is active: file edits, commands, and "
+            "out-of-cwd access will be auto-approved for this run "
+            "(non-interactive CI mode; approvals are session-scoped)."
+        )
+    permissions = PermissionManager(cwd, prompt=_make_auto_approve_prompt() if auto_approve else None)
     memory_mgr = MemoryManager(project_root=Path(cwd))
 
     model = create_model_adapter(
@@ -170,9 +215,11 @@ def run_headless(prompt: str | None = None) -> str:
 
 def main() -> None:
     """CLI entry point for headless mode."""
-    # Get prompt from command line args or stdin
-    prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
-    response = run_headless(prompt)
+    # Strip the --allow-edits flag (handled separately); everything else is the prompt.
+    allow_edits = "--allow-edits" in sys.argv
+    prompt_args = [arg for arg in sys.argv[1:] if arg != "--allow-edits"]
+    prompt = " ".join(prompt_args) if prompt_args else None
+    response = run_headless(prompt, allow_edits=allow_edits)
     print(response)
 
 

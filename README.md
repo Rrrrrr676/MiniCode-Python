@@ -14,21 +14,23 @@
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-1030%20passed-brightgreen?style=flat-square">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-1000%2B%20passed-brightgreen?style=flat-square">
   <img alt="Package" src="https://img.shields.io/badge/package-minicode--py-555?style=flat-square">
 </p>
 
 <p align="center">
-  <img alt="MiniCode Python terminal hero showing memory, session, rewind, and readiness" src="./docs/assets/readme/minicode-terminal-hero.svg" width="100%">
+  <img alt="Real MiniCode Python frontend demo showing memory, session, rewind, and readiness" src="./docs/assets/readme/minicode-frontend-hero.png" width="100%">
 </p>
 
 <p align="center">
-  <em>Memory / Session / Rewind / Readiness: the runtime is part of the product.</em>
+  <em>Real MiniCode frontend demo, not a mock: the landing page now reflects the current Python runtime and shows memory, session, rewind, and readiness as first-class product surfaces.</em>
 </p>
 
 MiniCode Python is the Python runtime in the MiniCode family. It is built for local development where the agent needs to survive long sessions, keep its state inspectable, recover from bad edits, and show what it is doing while it works.
 
 If Claude Code represents the polished terminal-agent experience, MiniCode Python is the lightweight, local-first version that leans harder into runtime transparency, durable sessions, memory-backed continuity, rewindability, and verifiable behavior.
+
+The screenshot above is rendered from the real MiniCode frontend demo. It highlights the four product promises we care about most on day one: memory that keeps context alive, sessions you can inspect and replay, rewind flows that make local edits safer, and readiness checks that tell you whether the runtime is actually ready to work.
 
 ## At a Glance
 
@@ -179,7 +181,7 @@ Current local verification result:
 Verification command:
 
 ```bash
-python -m compileall -q minicode py-src\minicode tests
+python -m compileall -q minicode tests
 pytest -q
 ```
 
@@ -229,7 +231,6 @@ What matters is not the diagram itself. What matters is that runtime state is tr
 | `docs/` | Architecture notes, optimization history, and productization reports. |
 | `openspec/` | Specs, archived change records, and build/verify planning artifacts. |
 | `.mini-code-memory/` | Workspace-level durable memory state created by the runtime. |
-| `py-src/minicode/` | Compatibility and migration mirror. |
 
 ## Core Modules
 

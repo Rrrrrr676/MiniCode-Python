@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -133,6 +134,7 @@ class HookManager:
             event: [] for event in HookEvent
         }
         self._enabled = True
+        self._lock = threading.Lock()
     
     def register(
         self,
@@ -152,18 +154,20 @@ class HookManager:
         """
         import asyncio
         
-        registration = HookRegistration(
-            event=event,
-            handler=handler,
-            is_async=asyncio.iscoroutinefunction(handler),
-            description=description,
-        )
-        
-        self._hooks[event].append(registration)
-        
-        def unregister():
-            if registration in self._hooks[event]:
-                self._hooks[event].remove(registration)
+        with self._lock:
+            registration = HookRegistration(
+                event=event,
+                handler=handler,
+                is_async=asyncio.iscoroutinefunction(handler),
+                description=description,
+            )
+            
+            self._hooks[event].append(registration)
+            
+            def unregister():
+                with self._lock:
+                    if registration in self._hooks[event]:
+                        self._hooks[event].remove(registration)
         
         return unregister
     
@@ -222,7 +226,10 @@ class HookManager:
         context = HookContext(event=event, data=kwargs)
         results = []
         
-        for registration in self._hooks[event]:
+        with self._lock:
+            handlers = list(self._hooks[event])  # snapshot for safe iteration
+        
+        for registration in handlers:
             if not registration.enabled or registration.is_async:
                 continue
             

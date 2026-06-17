@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from bisect import bisect_left
 from dataclasses import dataclass
 
@@ -27,6 +28,82 @@ _DIFF_TOOLS = frozenset({"edit_file", "patch_file", "diff_viewer"})
 # Tool output preview limits (match Rust TOOL_PREVIEW_LINES / TOOL_PREVIEW_CHARS)
 _TOOL_PREVIEW_LINES = 6
 _TOOL_PREVIEW_CHARS = 180
+
+
+# ---------------------------------------------------------------------------
+# Visual-line wrapping (port of TS charDisplayWidth / stringDisplayWidth /
+# wrapPanelBodyLine). The transcript scroll offset must count width-wrapped
+# VISUAL rows, not just newline-split logical lines, otherwise long lines make
+# the scrollbar/scroll offset under-count (TS parity).
+# ---------------------------------------------------------------------------
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _char_display_width(ch: str) -> int:
+    """Display column width of one character (2 for CJK/fullwidth/emoji)."""
+    code = ord(ch)
+    if 0x1100 <= code <= 0x115F or code in (0x2329, 0x232A):
+        return 2
+    if 0x2E80 <= code <= 0xA4CF and code != 0x303F:
+        return 2
+    if 0xAC00 <= code <= 0xD7A3:
+        return 2
+    if 0xF900 <= code <= 0xFAFF:
+        return 2
+    if 0xFE10 <= code <= 0xFE19 or 0xFE30 <= code <= 0xFE6F:
+        return 2
+    if 0xFF00 <= code <= 0xFF60 or 0xFFE0 <= code <= 0xFFE6:
+        return 2
+    if 0x1F300 <= code <= 0x1FAF6:
+        return 2
+    if 0x20000 <= code <= 0x3FFFD:
+        return 2
+    return 1
+
+
+def _string_display_width(text: str) -> int:
+    return sum(_char_display_width(ch) for ch in _strip_ansi(text))
+
+
+def _transcript_panel_width() -> int:
+    cols, _ = _cached_terminal_size()
+    return max(60, cols)
+
+
+def _wrap_panel_body_line(line: str, width: int) -> list[str]:
+    """Wrap a rendered line to ``width`` display columns (port of TS
+    ``wrapPanelBodyLine``).
+
+    Uses ``inner = width - 4`` to leave room for panel padding; greedy-packs by
+    character display width. Lines that already fit are returned unchanged
+    (ANSI styling preserved). Lines that overflow are returned as wrapped plain
+    segments (matching TS, which wraps the stripped text).
+    """
+    inner = max(0, width - 4)
+    if inner <= 0:
+        return [""]
+    if _string_display_width(line) <= inner:
+        return [line]
+    parts: list[str] = []
+    current = ""
+    current_width = 0
+    for ch in _strip_ansi(line):
+        ch_width = _char_display_width(ch)
+        if current_width + ch_width > inner:
+            parts.append(current)
+            current = ch
+            current_width = ch_width
+            continue
+        current += ch
+        current_width += ch_width
+    if current:
+        parts.append(current)
+    return parts
 
 
 def _is_runtime_progress_message(text: str) -> bool:
@@ -273,7 +350,7 @@ _EntryCacheKey = tuple[
 ]
 _entry_cache: dict[_EntryCacheKey, list[str]] = {}
 _line_count_cache: dict[_EntryCacheKey, int] = {}
-_LayoutCacheKey = tuple[int, int, int]
+_LayoutCacheKey = tuple[int, int, int, int]
 _layout_cache: dict[_LayoutCacheKey, TranscriptLayout] = {}
 _CACHE_MAX_SIZE = 500
 _LAYOUT_CACHE_MAX_SIZE = 64
@@ -299,13 +376,20 @@ def _entry_cache_key(entry: TranscriptEntry) -> _EntryCacheKey:
 
 
 def _get_entry_lines(entry: TranscriptEntry) -> list[str]:
-    cache_key = _entry_cache_key(entry)
+    content_key = _entry_cache_key(entry)
+    width = _transcript_panel_width()
+    cache_key = (content_key, width)
 
     cached = _entry_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    lines = _render_transcript_entry(entry).split("\n")
+    # Render logical lines, then wrap each to the panel width so the entry's
+    # line count reflects on-screen visual rows (TS parity).
+    logical = _render_transcript_entry(entry).split("\n")
+    lines: list[str] = []
+    for logical_line in logical:
+        lines.extend(_wrap_panel_body_line(logical_line, width))
 
     if len(_entry_cache) > _CACHE_MAX_SIZE:
         keys = list(_entry_cache.keys())
@@ -318,7 +402,9 @@ def _get_entry_lines(entry: TranscriptEntry) -> list[str]:
 
 
 def _get_entry_line_count(entry: TranscriptEntry) -> int:
-    cache_key = _entry_cache_key(entry)
+    content_key = _entry_cache_key(entry)
+    width = _transcript_panel_width()
+    cache_key = (content_key, width)
 
     cached_lc = _line_count_cache.get(cache_key)
     if cached_lc is not None:
@@ -342,7 +428,7 @@ def _layout_cache_key(
 ) -> _LayoutCacheKey | None:
     if revision is None:
         return None
-    return (id(entries), revision, len(entries))
+    return (id(entries), revision, len(entries), _transcript_panel_width())
 
 
 def _build_transcript_layout(

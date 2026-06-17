@@ -5,7 +5,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from minicode.api_retry import (
     RETRYABLE_STATUS,
@@ -13,6 +13,9 @@ from minicode.api_retry import (
 )
 from minicode.state import add_cost, record_api_error, update_context_usage
 from minicode.types import AgentStep, StepDiagnostics
+
+if TYPE_CHECKING:
+    from minicode.state import Store, AppState
 
 DEFAULT_MAX_RETRIES = 4
 
@@ -181,7 +184,7 @@ class AnthropicModelAdapter:
             self._thinking_blocks = []
 
         request_body = {
-            "model": self.runtime["model"],
+            "model": self.runtime.get("model", ""),
             "system": system_message,
             "messages": converted_messages,
             "tools": self._get_serialized_tools(),
@@ -196,7 +199,7 @@ class AnthropicModelAdapter:
             request_body["stream"] = True
 
         request = urllib.request.Request(
-            url=_messages_endpoint(self.runtime["baseUrl"]),
+            url=_messages_endpoint(self.runtime.get("baseUrl", "")),
             data=json.dumps(request_body).encode("utf-8"),
             headers={
                 "content-type": "application/json",
@@ -204,7 +207,7 @@ class AnthropicModelAdapter:
                 **(
                     {"x-api-key": self.runtime["apiKey"]}
                     if self.runtime.get("apiKey")
-                    else {"Authorization": f"Bearer {self.runtime['authToken']}"}
+                    else {"Authorization": f"Bearer {self.runtime.get('authToken', '')}"}
                 ),
             },
             method="POST",
@@ -262,7 +265,7 @@ class AnthropicModelAdapter:
                 cache_creation_tokens = usage.get("cache_creation_input_tokens", 0)
                 
                 cost_usd = calculate_cost(
-                    model=self.runtime["model"],
+                    model=self.runtime.get("model", ""),
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cache_read_tokens=cache_read_tokens,
@@ -406,7 +409,7 @@ class AnthropicModelAdapter:
         if store:
             from minicode.cost_tracker import calculate_cost
             cost_usd = calculate_cost(
-                model=self.runtime["model"],
+                model=self.runtime.get("model", ""),
                 input_tokens=stream_input_tokens,
                 output_tokens=stream_output_tokens,
                 cache_read_tokens=stream_cache_read_tokens,

@@ -3,6 +3,11 @@ from dataclasses import dataclass
 from typing import Any
 
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from minicode.agent_metrics import AgentMetricsCollector
+
 class ErrorCategory(Enum):
     NETWORK = "network"
     PERMISSION = "permission"

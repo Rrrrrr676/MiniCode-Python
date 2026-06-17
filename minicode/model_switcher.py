@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 from minicode.config import configured_model_fallbacks, default_model_fallbacks
 from minicode.logging_config import get_logger
@@ -215,6 +216,7 @@ class ModelSwitcher:
         provider_env = f"{current_provider.upper()}_MODEL_FALLBACKS"
         explicit_candidates: list[str] = []
         candidates: list[str] = []
+        bounded_family_fallbacks = False
 
         runtime_candidates = configured_model_fallbacks(self._runtime, current_provider)
         explicit_candidates.extend(runtime_candidates)
@@ -232,13 +234,15 @@ class ModelSwitcher:
             explicit_candidates.extend(parsed)
             candidates.extend(parsed)
 
-        current_info = resolve_model_info(self._current_model)
-        candidates.extend(
-            info.name
-            for info in list_available_models(current_info.provider)
-        )
+        bounded_family_fallbacks = self._should_bound_provider_family_fallbacks(explicit_candidates)
+        if not bounded_family_fallbacks:
+            current_info = resolve_model_info(self._current_model)
+            candidates.extend(
+                info.name
+                for info in list_available_models(current_info.provider)
+            )
 
-        if not self._should_limit_cross_provider_fallbacks(explicit_candidates):
+        if not bounded_family_fallbacks:
             try:
                 decision = ModelSelectionController().decide(
                     ModelSelectionSignal(
@@ -274,18 +278,40 @@ class ModelSwitcher:
             ordered.append(normalized)
         return ordered
 
-    def _should_limit_cross_provider_fallbacks(self, explicit_candidates: list[str]) -> bool:
+    def _should_bound_provider_family_fallbacks(self, explicit_candidates: list[str]) -> bool:
         try:
             current_provider = detect_provider_name(self._current_model)
         except Exception:
             return False
-        if current_provider != "anthropic":
+        if current_provider == "anthropic":
+            if not self._current_model or self._current_model.startswith("claude-"):
+                return False
+            if explicit_candidates:
+                return True
+            return any(self._runtime_family_defaults.values())
+        if current_provider == "openai":
+            return self._uses_custom_openai_compatible_host()
+        return False
+
+    def _uses_custom_openai_compatible_host(self) -> bool:
+        if detect_provider_name(self._current_model) != "openai":
             return False
-        if not self._current_model or self._current_model.startswith("claude-"):
+        try:
+            provider_config = build_provider_config(self._current_model, self._runtime)
+        except Exception:
             return False
-        if explicit_candidates:
-            return True
-        return any(self._runtime_family_defaults.values())
+        base_url = str(
+            getattr(provider_config, "base_url", "")
+            or getattr(provider_config, "api_base_url", "")
+            or ""
+        ).strip()
+        if not base_url:
+            return False
+        normalized = _normalize_openai_base_url(base_url)
+        return normalized not in {
+            "https://api.openai.com",
+            "https://api.openai.com/v1",
+        }
 
     def _resolve_runtime_model_override(self, candidate: str) -> str:
         normalized = candidate.strip()
@@ -343,3 +369,18 @@ def detect_provider_name(model: str) -> str:
 
 def _parse_model_list(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _normalize_openai_base_url(raw: str) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urlparse(value)
+    scheme = (parsed.scheme or "https").lower()
+    netloc = parsed.netloc.lower()
+    path = (parsed.path or "").rstrip("/")
+    if path == "/v1/messages":
+        path = "/v1"
+    return f"{scheme}://{netloc}{path}"

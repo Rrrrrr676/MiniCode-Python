@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import codecs
+import subprocess
+import sys
+from pathlib import Path
+
 from minicode.main import (
     _handle_inspect_session_request,
     _handle_preview_rewind_request,
@@ -95,3 +100,23 @@ def test_handle_preview_rewind_request_errors_when_missing(monkeypatch, capsys) 
 
     assert code == 1
     assert "No saved session found to preview." in captured.err
+
+
+def test_piped_utf8_bom_local_command_is_handled_without_model_call() -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+
+    result = subprocess.run(
+        [sys.executable, "-m", "minicode.main"],
+        input=codecs.BOM_UTF8 + b"/memory\n",
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+    )
+
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
+
+    assert result.returncode == 0
+    assert "Memory System Status" in stdout
+    assert "Model API error" not in stdout
+    assert "Model API error" not in stderr

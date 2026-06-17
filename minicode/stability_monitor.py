@@ -19,6 +19,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from minicode.context_cybernetics import ContextCyberneticsOrchestrator
+
 class HealthLevel(Enum):
     """System health level."""
     HEALTHY = "healthy"

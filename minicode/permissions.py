@@ -11,6 +11,7 @@ from minicode.config import MINI_CODE_PERMISSIONS_PATH
 
 # Auto mode integration
 from minicode.auto_mode import AutoModeChecker, PermissionMode, get_mode_state
+from minicode.logging_config import log_permission_check
 
 # 权限决策类型 — 对齐 TS 版 PermissionDecision
 PermissionDecision = Literal[
@@ -285,9 +286,11 @@ class PermissionManager:
         if assessment.action == "approve":
             get_mode_state().record_decision("approve")
             self.session_allowed_paths.add(normalized_target)
+            log_permission_check("path_access", normalized_target, granted=True)
             return
-        
+
         if self.prompt is None:
+            log_permission_check("path_access", normalized_target, granted=False)
             raise RuntimeError(
                 f"Path {normalized_target} is outside cwd {self.workspace_root}. Start minicode in TTY mode to approve it."
             )
@@ -337,12 +340,15 @@ class PermissionManager:
         reason = force_prompt_reason or _classify_dangerous_command(command, args)
         if not reason:
             # Not classified as dangerous — check auto mode for auto-approve
+            _sig = _format_command_signature(command, args)
             assessment = self.auto_checker.assess_risk("run_command", {"command": [command] + args})
             if assessment.action == "approve":
                 get_mode_state().record_decision("approve")
+                log_permission_check("run_command", _sig, granted=True)
                 return
             if assessment.action == "block":
                 get_mode_state().record_decision("block")
+                log_permission_check("run_command", _sig, granted=False)
                 raise RuntimeError(f"Command blocked by auto mode: {assessment.reason}")
             # action == "prompt" — fall through to normal approval flow
             return
@@ -357,12 +363,15 @@ class PermissionManager:
         if assessment.action == "approve":
             get_mode_state().record_decision("approve")
             self.session_allowed_commands.add(signature)
+            log_permission_check("run_command", signature, granted=True)
             return
         if assessment.action == "block":
             get_mode_state().record_decision("block")
+            log_permission_check("run_command", signature, granted=False)
             raise RuntimeError(f"Command blocked by auto mode: {assessment.reason}")
-        
+
         if self.prompt is None:
+            log_permission_check("run_command", signature, granted=False)
             raise RuntimeError(f"Command requires approval: {signature}. Start minicode in TTY mode to approve it.")
         # Distinguish forced prompts (external trigger) from dangerous commands
         summary = (
@@ -419,12 +428,15 @@ class PermissionManager:
         if assessment.action == "approve":
             get_mode_state().record_decision("approve")
             self.session_allowed_edits.add(normalized_target)
+            log_permission_check("edit_file", normalized_target, granted=True)
             return
         if assessment.action == "block":
             get_mode_state().record_decision("block")
+            log_permission_check("edit_file", normalized_target, granted=False)
             raise RuntimeError(f"Edit blocked by auto mode: {assessment.reason}")
-        
+
         if self.prompt is None:
+            log_permission_check("edit_file", normalized_target, granted=False)
             raise RuntimeError(f"Edit requires approval: {normalized_target}. Start minicode in TTY mode to review it.")
         result = self.prompt(
             {

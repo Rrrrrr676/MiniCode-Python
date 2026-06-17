@@ -877,3 +877,70 @@ def test_runtime_summary_from_transcript_entries_deduplicates_runtime_tokens():
     )
 
     assert summary == "phase:explore@1 -> guard:tool_evidence@4"
+
+
+# ---------------------------------------------------------------------------
+# Deep-dive: delta incremental save/merge robustness (2026-06-16)
+# ---------------------------------------------------------------------------
+
+
+def test_update_metadata_handles_none_content(temp_session_dir):
+    """A user/assistant message with content=None must not crash update_metadata
+    (called on every save_session). Previously: TypeError on content[:100]."""
+    session = create_new_session(workspace="/tmp/test")
+    session.messages = [
+        {"role": "user", "content": None},
+        {"role": "assistant", "content": None},
+        {"role": "user", "content": "real prompt"},
+    ]
+    session.update_metadata()  # must not raise
+    assert session.metadata.first_message == ""  # None coerced to ""
+
+
+def test_delta_roundtrip_preserves_appended_state(temp_session_dir):
+    """Full save, then several incremental (delta) appends, then load must
+    reconstruct messages/transcripts/checkpoints exactly."""
+    session = create_new_session(workspace="/tmp/test")
+    session.messages = [{"role": "user", "content": "m0"}]
+    session.transcript_entries = [{"id": 0, "kind": "user", "body": "m0"}]
+    save_session(session)  # full save (first)
+
+    # Append across multiple delta saves
+    for i in range(1, 6):
+        session.messages.append({"role": "assistant", "content": f"m{i}"})
+        session.transcript_entries.append({"id": i, "kind": "assistant", "body": f"m{i}"})
+        save_session(session, force_full=False)  # delta saves
+
+    loaded = load_session(session.session_id)
+    assert loaded is not None
+    assert [m["content"] for m in loaded.messages] == [f"m{i}" for i in range(6)]
+    assert len(loaded.transcript_entries) == 6
+
+
+def test_delta_save_idempotent_when_nothing_changed(temp_session_dir):
+    """Saving with no new data should not create spurious deltas or grow state."""
+    session = create_new_session(workspace="/tmp/test")
+    session.messages = [{"role": "user", "content": "x"}]
+    save_session(session)  # full
+    count_after_full = session._delta_save_count
+    save_session(session, force_full=False)  # nothing new
+    save_session(session, force_full=False)  # nothing new
+    assert session._delta_save_count == count_after_full  # no new deltas recorded
+
+
+def test_save_load_preserves_checkpoints(temp_session_dir, tmp_path):
+    """Checkpoint append across a delta save must round-trip exactly."""
+    session = create_new_session(workspace=str(tmp_path))
+    session.messages = [{"role": "user", "content": "go"}]
+    save_session(session)  # full
+
+    cp = create_file_checkpoint(
+        session, file_path=str(tmp_path / "f.txt"), existed=True, previous_content="before"
+    )
+    assert cp is not None
+    # create_file_checkpoint already appends to session.checkpoints and delta-saves
+
+    loaded = load_session(session.session_id)
+    assert loaded is not None
+    assert len(loaded.checkpoints) == 1
+    assert loaded.checkpoints[0].checkpoint_id == cp.checkpoint_id

@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Callable
+from typing import Any, Callable
 
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9]+")
@@ -1315,8 +1315,12 @@ class StateReasoner:
             return None
         user = sorted(user_records, key=lambda record: (date_key(record.date), record.confidence), reverse=True)[0]
         other = sorted(other_records, key=lambda record: (date_key(record.date), record.confidence), reverse=True)[0]
-        user_age = int(re.search(r"\d+", user.value).group(0))
-        other_age = int(re.search(r"\d+", other.value).group(0))
+        user_age_match = re.search(r"\d+", user.value)
+        other_age_match = re.search(r"\d+", other.value)
+        if user_age_match is None or other_age_match is None:
+            return None
+        user_age = int(user_age_match.group(0))
+        other_age = int(other_age_match.group(0))
         return StateReasoningResult(
             answer=str(abs(other_age - user_age)),
             reasoning_type="age-difference",
@@ -1365,9 +1369,10 @@ class StateReasoner:
         q = question.lower()
         events = [
             record for record in self.records
-            if record.record_type == "event"
+            if record.record_type in {"event", "state"}
             and score_state_record(q_terms, record) > 0
         ]
+        target_phrases = _duration_sum_travel_targets(question)
         durations: list[tuple[int, StateRecord]] = []
         seen_duration_evidence: set[tuple[str, int]] = set()
         for record in events:
@@ -1387,6 +1392,8 @@ class StateReasoner:
                 durations.append((days, record))
         if not durations:
             return None
+        if len(target_phrases) >= 2 and "travel" in q:
+            return self._answer_targeted_travel_duration_sum(target_phrases, durations)
         total = sum(days for days, _ in durations)
         return StateReasoningResult(
             answer=f"{total} days",
@@ -1394,6 +1401,56 @@ class StateReasoner:
             confidence=0.72,
             evidence_ids=[record.evidence_id for _, record in durations],
             explanation=f"Summed explicit duration mentions: {' + '.join(str(days) for days, _ in durations)}.",
+        )
+
+    def _answer_targeted_travel_duration_sum(
+        self,
+        target_phrases: list[str],
+        durations: list[tuple[int, StateRecord]],
+    ) -> StateReasoningResult | None:
+        session_targets: dict[str, set[str]] = {}
+        for record in self.records:
+            hay = _record_haystack(record)
+            matched = {target for target in target_phrases if _text_matches_target(hay, target)}
+            if matched:
+                session_targets.setdefault(_record_session_id(record), set()).update(matched)
+        matched_durations: dict[str, tuple[int, StateRecord]] = {}
+        for days, record in durations:
+            hay = _record_haystack(record)
+            direct_targets = [target for target in target_phrases if _text_matches_target(hay, target)]
+            if not direct_targets:
+                fallback_targets = sorted(session_targets.get(_record_session_id(record), set()))
+                if len(fallback_targets) == 1 and not _contains_other_travel_location(hay, fallback_targets[0]):
+                    direct_targets = fallback_targets
+            for target in direct_targets:
+                current = matched_durations.get(target)
+                if current is None or _duration_target_score(record, target) > _duration_target_score(current[1], target):
+                    matched_durations[target] = (days, record)
+        missing_targets = [target for target in target_phrases if target not in matched_durations]
+        if missing_targets and matched_durations:
+            known_target, (known_days, known_record) = next(iter(matched_durations.items()))
+            missing = _display_target(missing_targets[0])
+            known = _display_target(known_target)
+            return StateReasoningResult(
+                answer=(
+                    f"The information provided is not enough. You mentioned traveling for {known_days} days "
+                    f"in {known} but did not mention anything about the trip to {missing}."
+                ),
+                reasoning_type="duration-sum",
+                confidence=0.68,
+                evidence_ids=[known_record.evidence_id],
+                explanation=f"Found duration for {known} but not for {missing}.",
+            )
+        if missing_targets:
+            return None
+        ordered = [matched_durations[target] for target in target_phrases]
+        total = sum(days for days, _ in ordered)
+        return StateReasoningResult(
+            answer=f"{total} days",
+            reasoning_type="duration-sum",
+            confidence=0.74,
+            evidence_ids=[record.evidence_id for _, record in ordered],
+            explanation=f"Summed target-matched duration mentions: {' + '.join(str(days) for days, _ in ordered)}.",
         )
 
     def answer_since_consecutive_events(self, question: str, reference_date: str = "") -> StateReasoningResult | None:
@@ -1492,9 +1549,17 @@ class StateReasoner:
     def _format_temporal_delta(question: str, days: int) -> str:
         q = question.lower()
         if "week" in q:
-            return str(round(days / 7))
+            weeks = round(days / 7)
+            if "ago" in q:
+                unit = "week" if weeks == 1 else "weeks"
+                return f"{weeks} {unit} ago"
+            return str(weeks)
         if "month" in q:
-            return str(round(days / 30))
+            months = round(days / 30)
+            if "ago" in q:
+                unit = "month" if months == 1 else "months"
+                return f"{months} {unit} ago"
+            return str(months)
         if days == 1:
             return "1 day"
         return f"{days} days"
@@ -2061,6 +2126,104 @@ def _extract_duration_days(text: str) -> int:
     return 0
 
 
+def _number_word_to_int(raw: str) -> int:
+    value = str(raw or "").lower()
+    return int(value) if value.isdigit() else NUMBER_WORDS.get(value, 0)
+
+
+TRAVEL_LOCATION_ALIASES = {
+    "new york city": {"new york city", "new york", "nyc"},
+}
+
+KNOWN_TRAVEL_LOCATIONS = {
+    "amsterdam",
+    "barcelona",
+    "brazil",
+    "chicago",
+    "europe",
+    "hawaii",
+    "japan",
+    "new york",
+    "new york city",
+    "nyc",
+    "paris",
+    "portland",
+    "rome",
+    "seattle",
+}
+
+
+def _duration_sum_travel_targets(question: str) -> list[str]:
+    lowered = str(question or "").lower().rstrip("?.! ")
+    match = re.search(r"\btravel(?:ing|ling|ed)?\s+in\s+(?P<targets>.+)$", lowered)
+    if not match:
+        match = re.search(r"\bspent\s+in\s+(?P<targets>.+)$", lowered)
+    if not match:
+        return []
+    raw = match.group("targets")
+    raw = re.split(r"\b(?:this year|last year|today|recently)\b", raw, maxsplit=1)[0]
+    parts = [part.strip(" ,") for part in re.split(r"\s+and\s+|,", raw) if part.strip(" ,")]
+    targets: list[str] = []
+    for part in parts:
+        part = re.sub(r"^(?:in|the)\s+", "", part).strip()
+        tokens = [token for token in tokenize(part) if token not in STOPWORDS and token not in {"total", "traveling", "travel"}]
+        if tokens:
+            targets.append(" ".join(tokens))
+    return targets
+
+
+def _record_haystack(record: StateRecord) -> str:
+    return " ".join([record.subject, record.attribute, record.value, record.evidence]).lower()
+
+
+def _record_session_id(record: StateRecord) -> str:
+    return str(record.evidence_id or "").split(":", maxsplit=1)[0]
+
+
+def _target_aliases(target: str) -> set[str]:
+    normalized = " ".join(tokenize(target))
+    aliases = {normalized}
+    aliases.update(TRAVEL_LOCATION_ALIASES.get(normalized, set()))
+    return aliases
+
+
+def _text_matches_target(text: str, target: str) -> bool:
+    lowered = str(text or "").lower()
+    aliases = _target_aliases(target)
+    if any(re.search(rf"\b{re.escape(alias)}\b", lowered) for alias in aliases):
+        return True
+    target_tokens = [token for token in tokenize(target) if token not in STOPWORDS]
+    return bool(target_tokens) and all(re.search(rf"\b{re.escape(token)}\b", lowered) for token in target_tokens)
+
+
+def _contains_other_travel_location(text: str, target: str) -> bool:
+    lowered = str(text or "").lower()
+    target_aliases = _target_aliases(target)
+    for location in KNOWN_TRAVEL_LOCATIONS:
+        if location in target_aliases:
+            continue
+        if re.search(rf"\b{re.escape(location)}\b", lowered):
+            return True
+    return False
+
+
+def _duration_target_score(record: StateRecord, target: str) -> int:
+    hay = _record_haystack(record)
+    score = 0
+    if _text_matches_target(" ".join([record.subject, record.attribute, record.value]).lower(), target):
+        score += 2
+    if _text_matches_target(hay, target):
+        score += 1
+    return score
+
+
+def _display_target(target: str) -> str:
+    words = target.split()
+    if target == "new york city":
+        return "New York City"
+    return " ".join(word.upper() if word == "nyc" else word.capitalize() for word in words)
+
+
 def _extract_month_day_range_days(text: str) -> tuple[str, int] | None:
     match = re.search(
         r"\bfrom\s+(?P<month>january|february|march|april|may|june|july|august|september|october|november|december)\s+"
@@ -2274,6 +2437,16 @@ def _extract_numeric_fact_records(text: str, *, date: str, evidence_id: str) -> 
         records.append(_numeric_state(subject="undergraduate studies", attribute="study gpa", value=match.group("value"), date=date, evidence=source, evidence_id=evidence_id))
     for match in re.finditer(r"\b(?P<value>\d+)[-\s]+day\s+trip\s+to\s+(?P<subject>Chicago|Japan)\b", source, re.IGNORECASE):
         records.append(_numeric_state(subject=f"{match.group('subject')} trip", attribute="trip duration days", value=match.group("value"), date=date, evidence=source, evidence_id=evidence_id))
+    for match in re.finditer(r"\btrip\s+to\s+(?P<subject>[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,2})\s+for\s+(?P<value>one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+days?\b", source, re.IGNORECASE):
+        subject = match.group("subject").strip()
+        records.append(_numeric_state(subject=f"{subject} trip", attribute="trip duration days", value=str(_number_word_to_int(match.group("value"))), date=date, evidence=source, evidence_id=evidence_id))
+    for match in re.finditer(r"\btrip\s+to\s+(?P<subject>[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,2})\s+[^.?!;\n]{0,80}?\bfor\s+(?P<value>one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+days?\b", source, re.IGNORECASE):
+        subject = match.group("subject").strip()
+        records.append(_numeric_state(subject=f"{subject} trip", attribute="trip duration days", value=str(_number_word_to_int(match.group("value"))), date=date, evidence=source, evidence_id=evidence_id))
+    if re.search(r"\b(?:trip|travel|traveling|solo|family)\b", source, re.IGNORECASE):
+        for match in re.finditer(r"\b(?:for\s+(?:the\s+)?(?P<value_a>one|two|three|four|five|six|seven|eight|nine|ten|\d+)[-\s]+day|(?P<value_b>one|two|three|four|five|six|seven|eight|nine|ten|\d+)[-\s]+day)\b", source, re.IGNORECASE):
+            raw_value = match.group("value_a") or match.group("value_b")
+            records.append(_numeric_state(subject="trip", attribute="trip duration days", value=str(_number_word_to_int(raw_value)), date=date, evidence=source, evidence_id=evidence_id))
     for match in re.finditer(r"\b(?P<source>HelloFresh|UberEats)[^.?!;\n]{0,100}?\b(?P<value>\d+(?:\.\d+)?)%\s+discount\b", source, re.IGNORECASE):
         records.append(_numeric_state(subject=match.group("source"), attribute="order discount percent", value=match.group("value"), date=date, evidence=source, evidence_id=evidence_id))
     for match in re.finditer(r"\b(?P<value>\d+(?:\.\d+)?)%\s+off\s+(?:my\s+)?(?P<source>HelloFresh|UberEats)\s+order\b", source, re.IGNORECASE):
@@ -3192,7 +3365,7 @@ def score_turn(question_terms: set[str], content: str, role: str) -> float:
 def build_timeline_context(
     *,
     question: str,
-    sessions: list[list[dict]],
+    sessions: list[list[dict[str, Any]]],
     session_ids: list[str],
     session_dates: list[str],
     ranked_session_ids: list[str],

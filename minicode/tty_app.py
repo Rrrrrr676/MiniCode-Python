@@ -11,7 +11,6 @@ including:
 
 from __future__ import annotations
 
-import logging
 import os
 import sys
 import threading
@@ -178,7 +177,7 @@ def run_tty_app(
                 if not chunk:
                     continue
 
-                parsed = parse_input_chunk(input_remainder + chunk)
+                parsed = parse_input_chunk(input_remainder + chunk, incoming_chunk=chunk)
                 input_remainder = parsed.rest
 
                 for event in parsed.events:
@@ -195,7 +194,8 @@ def run_tty_app(
                         break
                     except Exception as e:
                         # 记录事件处理错误，但不中断主循环
-                        logging.debug("Event handling error: %s", e, exc_info=True)
+                        from minicode.logging_config import get_logger
+                        get_logger("tty_app").debug("Event handling error: %s", e, exc_info=True)
 
                 # Ensure the final state after processing all events is visible
                 throttled.flush()

@@ -48,6 +48,63 @@ DEFAULT_CONTEXT_WINDOWS = {
     "default": 128_000,  # Fallback
 }
 
+
+# ---------------------------------------------------------------------------
+# Model context window resolution (port of TS getModelContextWindow).
+# Case-insensitive substring matching with an output reserve, so model ids like
+# "claude-opus-4-6", "CLAUDE-...", or "anthropic/claude-3-5-sonnet-latest"
+# resolve correctly instead of falling through to the 128k default.
+# ---------------------------------------------------------------------------
+
+
+class ModelContextWindow:
+    __slots__ = ("context_window", "output_reserve", "effective_input")
+
+    def __init__(self, context_window: int, output_reserve: int) -> None:
+        self.context_window = context_window
+        self.output_reserve = output_reserve
+        self.effective_input = context_window - output_reserve
+
+
+_UNKNOWN_MODEL_CONTEXT = (128_000, 8_000)
+
+_MODEL_CONTEXT_RULES: list[tuple[list[str], int, int]] = [
+    (["claude-opus-4-6", "claude opus 4.6", "opus-4-6"], 200_000, 16_000),
+    (["claude-sonnet-4-6", "claude sonnet 4.6", "sonnet-4-6"], 200_000, 16_000),
+    (["claude-haiku-4-5", "claude haiku 4.5", "haiku-4-5"], 200_000, 16_000),
+    (["claude-opus-4-1", "claude opus 4.1", "opus-4-1", "claude-opus-4", "claude opus 4", "opus-4"], 200_000, 16_000),
+    (["claude-sonnet-4", "claude sonnet 4", "sonnet-4"], 200_000, 16_000),
+    (["claude-3-7-sonnet", "claude 3.7 sonnet", "3-7-sonnet"], 200_000, 8_192),
+    (["claude-3-5-sonnet", "claude 3.5 sonnet", "3-5-sonnet", "claude-3-sonnet"], 200_000, 8_192),
+    (["claude-3-5-haiku", "claude 3.5 haiku", "3-5-haiku"], 200_000, 8_192),
+    (["claude-3-opus", "claude 3 opus"], 200_000, 4_096),
+    (["claude-3-haiku", "claude 3 haiku"], 200_000, 4_096),
+    (["gpt-5-codex", "gpt-5.4", "gpt-5.2", "gpt-5.1", "gpt-5"], 128_000, 16_000),
+    (["o4-mini", "o3", "o1-pro", "o1"], 200_000, 16_000),
+    (["gpt-4.1-mini", "gpt-4.1-nano", "gpt-4.1"], 1_047_576, 16_000),
+    (["gpt-4o-mini", "gpt-4o"], 128_000, 16_384),
+    (["gpt-4"], 128_000, 8_192),
+    (["gemini-2.5-pro", "gemini 2.5 pro"], 1_048_576, 16_000),
+    (["gemini-2.5-flash-lite", "gemini 2.5 flash-lite"], 1_048_576, 16_000),
+    (["gemini-2.5-flash", "gemini 2.5 flash"], 1_048_576, 16_000),
+    (["deepseek-reasoner"], 128_000, 16_000),
+    (["deepseek-chat"], 128_000, 4_000),
+]
+
+
+def get_model_context_window(model: str) -> ModelContextWindow:
+    """Resolve a model id to its context window + output reserve.
+
+    Case-insensitive substring match (port of TS getModelContextWindow).
+    Falls back to 128k / 8k reserve for unknown models.
+    """
+    normalized = (model or "").strip().lower()
+    for patterns, context_window, output_reserve in _MODEL_CONTEXT_RULES:
+        if any(pattern in normalized for pattern in patterns):
+            return ModelContextWindow(context_window, output_reserve)
+    context_window, output_reserve = _UNKNOWN_MODEL_CONTEXT
+    return ModelContextWindow(context_window, output_reserve)
+
 # Auto-compaction threshold (95% of context window)
 AUTOCOMPACT_THRESHOLD = 0.95
 
@@ -110,8 +167,18 @@ def estimate_tokens(text: str) -> int:
 
 def estimate_message_tokens(message: dict[str, Any]) -> int:
     """Estimate tokens for a single message."""
+    # Match TS semantics: a message with no content and no tool input contributes
+    # zero tokens (TS estimateMessageTokens is ceil(0/ratio) == 0). We keep the
+    # CJK-aware estimate_tokens() for non-empty content — it is more accurate for
+    # Chinese/Japanese text than TS's plain char/3.5 ratio.
+    content = message.get("content", "")
+    has_input = bool(message.get("input"))
+    content_str = content if isinstance(content, str) else ""
+    if not content_str and not has_input:
+        return 0
+
     tokens = 0
-    
+
     # Role overhead
     role = message.get("role", "")
     if role == "system":
@@ -143,6 +210,96 @@ def estimate_message_tokens(message: dict[str, Any]) -> int:
 def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
     """Estimate total tokens for a list of messages."""
     return sum(estimate_message_tokens(msg) for msg in messages)
+
+
+# ---------------------------------------------------------------------------
+# Provider-usage-aware token accounting (port of TS tokenCountWithEstimation
+# and computeContextStats). NOTE: Python does not currently record provider
+# usage on individual messages, so the provider_usage path falls back to
+# estimate_only until that wiring is added; the estimate_only + warning-level
+# math is still correct and useful.
+# ---------------------------------------------------------------------------
+
+
+def _message_provider_usage(message: dict[str, Any]) -> dict[str, Any] | None:
+    role = message.get("role")
+    if role not in ("assistant", "assistant_progress", "assistant_tool_call"):
+        return None
+    usage = message.get("providerUsage") or message.get("provider_usage")
+    if usage and not message.get("usageStale") and not message.get("usage_stale"):
+        return usage
+    return None
+
+
+def _stale_usage_reason(messages: list[dict[str, Any]]) -> str | None:
+    for message in messages:
+        if (
+            message.get("role") in ("assistant", "assistant_progress", "assistant_tool_call")
+            and (message.get("providerUsage") or message.get("provider_usage"))
+            and (message.get("usageStale") or message.get("usage_stale"))
+        ):
+            return message.get("usageStaleReason") or message.get("usage_stale_reason") or "provider usage was marked stale"
+    return None
+
+
+def token_count_with_estimation(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Provider-usage-aware token counting (port of TS tokenCountWithEstimation)."""
+    for i in range(len(messages) - 1, -1, -1):
+        usage = _message_provider_usage(messages[i])
+        if not usage:
+            continue
+        total_usage = int(usage.get("totalTokens", usage.get("total_tokens", 0)) or 0)
+        estimated = estimate_messages_tokens(messages[i + 1:])
+        boundary_id = messages[i].get("toolUseId") or messages[i].get("tool_use_id")
+        return {
+            "total_tokens": total_usage + estimated,
+            "provider_usage_tokens": total_usage,
+            "estimated_tokens": estimated,
+            "source": "provider_usage_plus_estimate" if estimated > 0 else "provider_usage",
+            "is_exact": estimated == 0,
+            "usage_boundary": {"message_index": i, "message_id": boundary_id},
+            "stale": False,
+            "reason": None,
+        }
+
+    reason = _stale_usage_reason(messages)
+    estimated = estimate_messages_tokens(messages)
+    return {
+        "total_tokens": estimated,
+        "provider_usage_tokens": 0,
+        "estimated_tokens": estimated,
+        "source": "estimate_only",
+        "is_exact": False,
+        "stale": bool(reason),
+        "reason": reason or "no provider usage available",
+    }
+
+
+def compute_context_stats(messages: list[dict[str, Any]], model: str) -> dict[str, Any]:
+    """Context stats with utilization + warning level (port of TS computeContextStats)."""
+    window = get_model_context_window(model)
+    accounting = token_count_with_estimation(messages)
+    effective = window.effective_input or 1
+    utilization = min(1.0, accounting["total_tokens"] / effective)
+    if utilization >= 0.95:
+        warning_level = "blocked"
+    elif utilization >= 0.85:
+        warning_level = "critical"
+    elif utilization >= 0.50:
+        warning_level = "warning"
+    else:
+        warning_level = "normal"
+    return {
+        "estimated_tokens": accounting["estimated_tokens"],
+        "total_tokens": accounting["total_tokens"],
+        "provider_usage_tokens": accounting["provider_usage_tokens"],
+        "context_window": window.context_window,
+        "effective_input": window.effective_input,
+        "utilization": utilization,
+        "warning_level": warning_level,
+        "accounting": accounting,
+    }
+
 
 
 @dataclass
@@ -419,16 +576,12 @@ class ContextManager:
     
     def __post_init__(self):
         if self.context_window == 0:
-            self.context_window = DEFAULT_CONTEXT_WINDOWS.get(
-                self.model, DEFAULT_CONTEXT_WINDOWS["default"]
-            )
-    
+            self.context_window = get_model_context_window(self.model).context_window
+
     def update_model(self, model: str) -> None:
         """Update model and adjust context window."""
         self.model = model
-        self.context_window = DEFAULT_CONTEXT_WINDOWS.get(
-            model, DEFAULT_CONTEXT_WINDOWS["default"]
-        )
+        self.context_window = get_model_context_window(model).context_window
     
     def add_message(self, message: dict[str, Any]) -> None:
         """Add a message and update tracking."""
@@ -733,7 +886,7 @@ class ContextManager:
         if tool_name in _SEARCH_TOOLS:
             pattern = inp.get("pattern") or inp.get("query", "")
             # Count matches from result
-            match_lines = [l for l in result_content.split("\n") if l.strip() and not l.startswith("#")]
+            match_lines = [line for line in result_content.split("\n") if line.strip() and not line.startswith("#")]
             return f"[Searched '{pattern[:50]}': {len(match_lines)} results]"
         
         if tool_name in _COMMAND_TOOLS:

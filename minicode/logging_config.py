@@ -3,9 +3,9 @@
 Provides structured logging with:
 - 分级日志（DEBUG/INFO/WARNING/ERROR）
 - 控制台和文件输出
-- 日志轮转（按大小 + 按时间，防止无限增长）
-- 结构化 JSON 日志（可选，便于机器解析）
-- 关键路径日志点（API 调用、工具执行、权限检查）
+- 日志轮转（按大小，防止无限增长）——这是当前唯一的正式轮转策略
+- 结构化 JSON 日志（可选，便于机器解析；见 --structured-logs / MINI_CODE_LOG_STRUCTURED）
+- 关键路径日志点（API 调用、工具执行、权限检查、会话事件）
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import logging.handlers
+import os
 import sys
 from datetime import datetime, timezone
 from typing import Any
@@ -26,11 +27,9 @@ LOG_FILE = MINI_CODE_DIR / "minicode.log"
 CONSOLE_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 FILE_FORMAT = "%(asctime)s [%(levelname)s] %(name)s %(filename)s:%(lineno)d: %(message)s"
 
-# 轮转配置
+# 轮转配置（按大小轮转是当前唯一正式策略）
 LOG_MAX_BYTES = 10 * 1024 * 1024   # 10 MB per file
 LOG_BACKUP_COUNT = 5               # Keep 5 rotated files (50 MB total max)
-LOG_ROTATION_WHEN = "midnight"     # Also rotate at midnight
-LOG_ROTATION_INTERVAL = 1          # Every 1 day
 
 
 # ---------------------------------------------------------------------------
@@ -140,14 +139,31 @@ def setup_logging(
 
 def get_logger(name: str) -> logging.Logger:
     """获取子模块 logger。
-    
+
     Args:
         name: 子模块名称（如 'agent_loop', 'tools.read_file'）
-        
+
     Returns:
         配置好的子 logger
     """
     return logging.getLogger(f"minicode.{name}")
+
+
+def structured_logging_requested(cli_flag: bool = False) -> bool:
+    """是否应启用结构化（JSON）日志。
+
+    启用条件：显式 CLI 标志（``--structured-logs``）为真，或环境变量
+    ``MINI_CODE_LOG_STRUCTURED`` 取真值（``1``/``true``/``yes``/``on``）。
+    统一在入口处调用，避免各模块各自判断。
+    """
+    if cli_flag:
+        return True
+    return os.getenv("MINI_CODE_LOG_STRUCTURED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 # ---------------------------------------------------------------------------

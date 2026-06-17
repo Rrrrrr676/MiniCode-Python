@@ -24,7 +24,13 @@ ENABLE_SYNC_OUTPUT  = "[?2026h"
 DISABLE_SYNC_OUTPUT = "[?2026l"
 DISABLE_FOCUS_TRACKING = "[?1004l"
 # Terminal types that do not support alternate screen or mouse tracking.
-_DUMB_TERMS = frozenset({"dumb", "linux", ""})
+# NOTE: the empty string is intentionally NOT included. On Windows the TERM
+# environment variable is unset by default, so treating "" as dumb would skip
+# the alternate screen buffer and cause every redraw frame to accumulate in the
+# terminal scrollback (garbled "stacked frame" output when scrolling up —
+# GitHub issue #7). Pipes / non-interactive output are handled separately via
+# the isatty() guard in _is_dumb_terminal().
+_DUMB_TERMS = frozenset({"dumb", "linux"})
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +108,17 @@ def show_cursor() -> None:
 
 
 def _is_dumb_terminal() -> bool:
-    """Return True if the terminal likely doesn't support escape sequences."""
+    """Return True if the terminal likely doesn't support escape sequences.
+
+    Windows has no ``TERM`` variable by default, but modern Windows consoles
+    support the alternate-screen buffer and mouse tracking once VT processing is
+    enabled (done in :func:`_enable_windows_vt_processing`). We therefore guard
+    against non-interactive (piped) output with ``isatty()`` rather than treating
+    an empty ``TERM`` as dumb — otherwise Windows would skip the alternate screen
+    and redraw frames would pile up in the scrollback (issue #7).
+    """
+    if not sys.stdout.isatty():
+        return True
     return os.environ.get("TERM", "") in _DUMB_TERMS
 
 

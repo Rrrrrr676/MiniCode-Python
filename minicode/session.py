@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from minicode.config import MINI_CODE_DIR
+from minicode.logging_config import log_session_event
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +145,8 @@ class SessionData:
         for msg in self.messages:
             if msg.get("role") == "user":
                 content = msg.get("content", "")
+                if not isinstance(content, str):
+                    content = "" if content is None else str(content)
                 self.metadata.first_message = content[:100]
                 break
 
@@ -152,6 +155,8 @@ class SessionData:
             for msg in reversed(self.messages):
                 if msg.get("role") in ("user", "assistant"):
                     content = msg.get("content", "")
+                    if not isinstance(content, str):
+                        content = "" if content is None else str(content)
                     self.metadata.last_message = content[:100]
                     break
     
@@ -465,16 +470,17 @@ def _consolidate_deltas(session: SessionData) -> None:
 
 def save_session(session: SessionData, force_full: bool = False) -> None:
     """Persist session to disk with incremental delta support.
-    
+
     Uses a hybrid strategy:
     - Delta saves: Only append new messages/transcripts (fast, small I/O)
     - Full saves: Serialize entire session (slower, but ensures consistency)
     - Consolidation: Merge deltas into full file periodically
-    
+
     Args:
         session: The session to save
         force_full: Force a full save (e.g., on explicit save command)
     """
+    log_session_event("save", details=f"id={session.session_id} force_full={force_full}")
     session.update_metadata()
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     
@@ -549,13 +555,14 @@ def save_session(session: SessionData, force_full: bool = False) -> None:
 
 def load_session(session_id: str) -> SessionData | None:
     """Load a session from disk, applying any pending deltas.
-    
+
     Loading process:
     1. Load the base session file
     2. Scan for delta files
     3. Apply deltas in order (append new messages/transcripts)
     4. Update tracking counters
     """
+    log_session_event("load", details=f"id={session_id}")
     session_path = _session_file(session_id)
     if not session_path.exists():
         return None
@@ -698,6 +705,7 @@ def create_new_session(workspace: str) -> SessionData:
     """Create a new empty session."""
     now = time.time()
     session_id = uuid.uuid4().hex[:12]
+    log_session_event("create", details=f"id={session_id} workspace={workspace}")
     return SessionData(
         session_id=session_id,
         created_at=now,

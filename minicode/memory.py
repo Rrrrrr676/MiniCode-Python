@@ -648,6 +648,14 @@ class MemoryEntry:
     related_to: list[str] = field(default_factory=list)  # Related memory IDs
     _cached_tokens: list[str] | None = field(default=None, repr=False)
 
+    def __post_init__(self) -> None:
+        # `content` is accessed as a str throughout search/scoring/formatting
+        # (8+ sites use .lower()/.strip()/[:N]); coerce None/non-str at
+        # construction so a malformed entry can't crash a memory search, which
+        # is injected into every system prompt.
+        if not isinstance(self.content, str):
+            self.content = "" if self.content is None else str(self.content)
+
     def __hash__(self) -> int:
         return hash(self.id)
 
@@ -813,6 +821,12 @@ class MemoryFile:
         if not self.entries:
             return []
 
+        # Snapshot entries so concurrent add_entry/_enforce_limits can't shift
+        # indices between the two loops below (was: "list index out of range"
+        # when another thread appended between building entry_tokens and the
+        # scoring loop).
+        entries = list(self.entries)
+
         query_tokens = _tokenize(query)
         query_tokens = _expand_query_terms(query_tokens, active_domains=active_domains)
         if not query_tokens:
@@ -822,7 +836,7 @@ class MemoryFile:
         query_terms = query_lower.split()
 
         entry_tokens = []
-        for entry in self.entries:
+        for entry in entries:
             text = f"{entry.content} {entry.category} {' '.join(entry.tags)}"
             entry_tokens.append(_tokenize(text))
 
@@ -830,7 +844,7 @@ class MemoryFile:
         avgdl = _compute_avgdl(entry_tokens)
 
         scored: list[tuple[float, MemoryEntry]] = []
-        for i, entry in enumerate(self.entries):
+        for i, entry in enumerate(entries):
             bm25 = _bm25_score(query_tokens, entry_tokens[i], idf, avgdl)
 
             substring_score = 0.0

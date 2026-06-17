@@ -52,6 +52,26 @@ CTRL_CHAR_TO_NAME: dict[str, str] = {
     '\x15': 'u',
 }
 
+def _is_multiline_paste_chunk(chunk: str) -> bool:
+    """A chunk that contains BOTH a newline and other text is a multi-line
+    paste (e.g. ``"line1\\r\\nline2"``). In that case newlines are preserved as
+    text instead of being treated as submit (return) events. A lone ``\\r`` /
+    ``\\n`` chunk (a real Enter keypress) is NOT a paste, so it still submits.
+
+    Mirrors the TS reference ``isMultilinePasteChunk`` for behavior parity.
+    """
+    has_newline = False
+    has_other = False
+    for c in chunk:
+        if c == '\r' or c == '\n':
+            has_newline = True
+        else:
+            has_other = True
+        if has_newline and has_other:
+            return True
+    return False
+
+
 def maybe_need_more_for_escape_sequence(chunk: str) -> bool:
     if not chunk:
         return False
@@ -59,7 +79,7 @@ def maybe_need_more_for_escape_sequence(chunk: str) -> bool:
         return False
     if len(chunk) == 1:
         return True
-    
+
     # CSI
     if chunk[1] == '[':
         # SGR Mouse: ESC[<button;x;yM/m
@@ -172,7 +192,19 @@ def parse_escape_sequence(chunk: str) -> tuple[ParsedInputEvent | None, int]:
     # Default to bare escape if nothing else matches and we are not waiting for more
     return KeyEvent(name='escape', ctrl=False, meta=False), 1
 
-def parse_input_chunk(chunk: str) -> ParseResult:
+def parse_input_chunk(chunk: str, incoming_chunk: str | None = None) -> ParseResult:
+    """Parse a chunk of raw terminal input into events.
+
+    Args:
+        chunk: The full text to parse (typically ``remainder + new_chunk``).
+        incoming_chunk: The newly-arrived, un-combined chunk. When provided, the
+            multi-line-paste detection runs against THIS (not the accumulated
+            remainder), matching the TS reference. Defaults to ``chunk`` for
+            single-arg callers.
+    """
+    treat_newlines_as_text = _is_multiline_paste_chunk(
+        incoming_chunk if incoming_chunk is not None else chunk
+    )
     events: list[ParsedInputEvent] = []
     i = 0
     while i < len(chunk):
@@ -214,18 +246,20 @@ def parse_input_chunk(chunk: str) -> ParseResult:
             i += consumed
             continue
 
-        # CR, CR+LF -> return.  Lone LF -> insert newline (Ctrl+J)
-        if char == '\r':
-            if i + 1 < len(chunk) and chunk[i+1] == '\n':
+        # Carriage return / line feed: submit, unless this is a multi-line paste
+        # (in which case the newline is preserved as text). \r\n and \n\r are
+        # consumed as a single newline. Mirrors TS parseInputChunk.
+        if char == '\r' or char == '\n':
+            if treat_newlines_as_text:
+                events.append(TextEvent(text='\n', ctrl=False, meta=False))
+            else:
+                events.append(KeyEvent(name='return', ctrl=False, meta=False))
+            if (char == '\r' and i + 1 < len(chunk) and chunk[i + 1] == '\n') or (
+                char == '\n' and i + 1 < len(chunk) and chunk[i + 1] == '\r'
+            ):
                 i += 2
             else:
                 i += 1
-            events.append(KeyEvent(name='return', ctrl=False, meta=False))
-            continue
-
-        if char == '\n':
-            events.append(TextEvent(text='\n', ctrl=False))
-            i += 1
             continue
 
         # Tab

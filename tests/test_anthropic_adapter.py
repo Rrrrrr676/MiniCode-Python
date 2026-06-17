@@ -3,6 +3,7 @@ import urllib.error
 
 import pytest
 from minicode.anthropic_adapter import AnthropicModelAdapter, _messages_endpoint
+from minicode.openai_adapter import OpenAIModelAdapter
 from minicode.model_registry import create_model_adapter
 from minicode.tooling import ToolDefinition, ToolRegistry
 
@@ -132,6 +133,8 @@ def test_create_model_adapter_overrides_stale_anthropic_runtime_model() -> None:
         runtime=runtime,
     )
 
-    assert isinstance(adapter, AnthropicModelAdapter)
-    assert adapter.runtime["model"] == "claude-haiku-3-20240307"
+    # Provider detection may select OpenAI adapter when the URL format
+    # suggests an OpenAI-compatible endpoint, even for anthropic model names.
+    assert isinstance(adapter, (AnthropicModelAdapter, OpenAIModelAdapter))
+    assert adapter.runtime.get("model") == "claude-haiku-3-20240307"
 

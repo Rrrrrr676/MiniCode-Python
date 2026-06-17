@@ -4,8 +4,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title data-i18n="page_title">MiniCode | AI-powered terminal coding assistant</title>
-  <meta name="description" content="MiniCode is a lightweight terminal coding assistant for local development workflows. Model-tool-loop, secure approvals, Skills & MCP.">
+  <title data-i18n="page_title">MiniCode Python | memory-first local coding agent</title>
+  <meta name="description" content="MiniCode Python is a lightweight local coding agent with memory continuity, inspectable sessions, rewind-safe editing, and readiness diagnostics.">
   
   <!-- Typography: Editorial Serif + Clean Sans -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -623,7 +623,7 @@
         <a href="#features" data-i18n="nav_features">Features</a>
         <a href="#architecture" data-i18n="nav_arch">Architecture</a>
         <button id="langToggle" class="lang-toggle">EN / 中</button>
-        <a href="https://github.com/LiuMengxuan04/MiniCode" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.85rem;" data-i18n="nav_github">GitHub</a>
+        <a href="https://github.com/QUSETIONS/MiniCode-Python" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.85rem;" data-i18n="nav_github">GitHub</a>
       </div>
     </div>
   </nav>
@@ -633,28 +633,28 @@
     <!-- Hero Section -->
     <header class="hero container">
       <div class="hero-badge fade-up" data-i18n="badge_beta">
-        MiniCode Beta 1.0 is available
+        MiniCode Python is live
       </div>
       <h1 class="fade-up delay-100" data-i18n="hero_h1" data-html="true">
-        AI-powered coding assistant <br>
-        built for <em>developers</em>
+        A lightweight coding agent <br>
+        with <em>memory, sessions, and rewind</em>
       </h1>
       <p class="fade-up delay-200" data-i18n="hero_desc">
-        Work with large language models directly in your terminal. Build, debug, and ship with an execution loop that keeps you in control. Describe what you need, and MiniCode handles the tools.
+        MiniCode Python is a local-first coding runtime. It keeps task memory alive, lets you inspect and replay sessions, creates rewind-safe checkpoints, and surfaces provider readiness before work goes sideways.
       </p>
       <div class="hero-actions fade-up delay-300">
-        <a class="btn btn-primary" href="https://github.com/LiuMengxuan04/MiniCode" target="_blank" data-i18n="btn_github">
+        <a class="btn btn-primary" href="https://github.com/QUSETIONS/MiniCode-Python" target="_blank" data-i18n="btn_github">
           View on GitHub
         </a>
-        <a id="btn_readme" class="btn btn-secondary" href="https://github.com/LiuMengxuan04/MiniCode/blob/main/README.md" target="_blank" data-i18n="btn_readme">
+        <a id="btn_readme" class="btn btn-secondary" href="https://github.com/QUSETIONS/MiniCode-Python/blob/main/README.md" target="_blank" data-i18n="btn_readme">
           Read Documentation
         </a>
-        <a class="btn btn-secondary" href="https://github.com/harkerhand/MiniCode-rs/tree/master" target="_blank" data-i18n="btn_rust">
-          Rust Version
+        <a class="btn btn-secondary" href="#features" data-i18n="btn_rust">
+          See the Runtime
         </a>
       </div>
       <p class="fade-up delay-300" data-i18n="multi_lang_note" style="margin-top: 16px; font-size: 0.95rem; color: var(--text-tertiary);">
-        Multi-language roadmap: Rust version is live, Python version is coming soon.
+        Python runtime is live today. Memory continuity, session replay, rewind preview, and readiness checks are already part of the local workflow.
       </p>
     </header>
 
@@ -663,28 +663,29 @@
       <div class="terminal-window">
         <!-- Top Panel: Header -->
         <div class="t-panel">
-          <div class="t-panel-title">api.minimaxi.com</div>
+          <div class="t-panel-title">www.cctq.ai</div>
           <div class="t-header-title">MiniCode</div>
-          <div class="t-header-desc" data-i18n="t_header_desc">Terminal coding assistant with a card-style session layout.</div>
+          <div class="t-header-desc" data-i18n="t_header_desc">Local coding runtime with memory-backed continuity and inspectable sessions.</div>
           
           <div class="t-stats-line">
-            <span class="t-stats-label">mini-code</span> <span class="t-stats-value">~/code/mini-code</span>
+            <span class="t-stats-label">minicode-py</span> <span class="t-stats-value">~/code/MiniCode-Python</span>
             <span class="t-stats-label">[session]</span> <span class="t-stats-value">local</span>
-            <span class="t-stats-label">[provider]</span> <span class="t-stats-value">api.minimaxi.com</span>
-            <span class="t-stats-label">[model]</span> <span class="t-stats-value">MiniMax-M2.7</span>
-            <span class="t-stats-label">[messages]</span> <span class="t-stats-value">3</span>
-            <span class="t-stats-label">[events]</span> <span class="t-stats-value">2</span>
-            <span class="t-stats-label">[skills]</span> <span class="t-stats-value green">13</span>
-            <span class="t-stats-label">[mcp]</span> <span class="t-stats-value">1</span>
+            <span class="t-stats-label">[provider]</span> <span class="t-stats-value">www.cctq.ai</span>
+            <span class="t-stats-label">[model]</span> <span class="t-stats-value">gpt-5.5</span>
+            <span class="t-stats-label">[memory]</span> <span class="t-stats-value">12 notes</span>
+            <span class="t-stats-label">[checkpoints]</span> <span class="t-stats-value">4</span>
+            <span class="t-stats-label">[skills]</span> <span class="t-stats-value green">18</span>
+            <span class="t-stats-label">[ready]</span> <span class="t-stats-value green">yes</span>
           </div>
-          <div class="t-cwd">cwd: ~/code/mini-code | extra allowed dirs: ~/code/claude-code, ~/cod...</div>
+          <div class="t-cwd">cwd: ~/code/MiniCode-Python | extra allowed dirs: ~/Desktop, ~/worktrees</div>
         </div>
 
         <!-- Middle Panel: Session Feed -->
         <div class="t-panel">
-          <div class="t-panel-title" data-i18n="t_events">2 events</div>
+          <div class="t-panel-title" data-i18n="t_events">4 events</div>
           <div class="t-feed-title" data-i18n="t_feed">session feed</div>
-          <div class="t-message" style="color: #5c7080;">.</div>
+          <div class="t-message" style="color: #5c7080;">runtime-summary: phase:explore@1 -&gt; phase:verify@4 -&gt; stop:done@5</div>
+          <div class="t-message" style="color: #5c7080;">checkpoint-summary: 2 saved; latest README refresh and provider config update</div>
           
           <div class="t-role" data-i18n="t_role">assistant</div>
           <div class="t-message" data-i18n="t_hello" data-html="true">Hello! 👋<br><br>I'm mini-code, your terminal coding assistant. I can help you with:</div>
@@ -915,20 +916,20 @@
     // I18n Dictionary
     const i18n = {
       en: {
-        page_title: "MiniCode | AI-powered terminal coding assistant",
+        page_title: "MiniCode Python | memory-first local coding agent",
         nav_features: "Features",
         nav_arch: "Architecture",
         nav_roadmap: "Roadmap",
         nav_github: "GitHub",
-        badge_beta: "MiniCode Beta 1.0 is available",
-        hero_h1: "AI-powered coding assistant <br> built for <em>developers</em>",
-        hero_desc: "Work with large language models directly in your terminal. Build, debug, and ship with an execution loop that keeps you in control. Describe what you need, and MiniCode handles the tools.",
+        badge_beta: "MiniCode Python is live",
+        hero_h1: "A lightweight coding agent <br> with <em>memory, sessions, and rewind</em>",
+        hero_desc: "Run a local coding workflow that keeps context alive, lets you inspect and replay sessions, preview rewinds before edits go wrong, and check provider readiness before you start.",
         btn_github: "View on GitHub",
-        btn_readme: "Read Documentation",
-        btn_rust: "Rust Version",
-        multi_lang_note: "Multi-language roadmap: Rust version is live, Python version is coming soon.",
-        t_header_desc: "Terminal coding assistant with a card-style session layout.",
-        t_events: "2 events",
+        btn_readme: "Read README",
+        btn_rust: "See the Runtime",
+        multi_lang_note: "Python runtime is live today. Memory continuity, session replay, rewind preview, and readiness checks are already part of the local workflow.",
+        t_header_desc: "Local coding runtime with memory-backed continuity and inspectable sessions.",
+        t_events: "4 events",
         t_feed: "session feed",
         t_role: "assistant",
         t_hello: "Hello! 👋<br><br>I'm mini-code, your terminal coding assistant. I can help you with:",
@@ -939,17 +940,25 @@
         t_l5: "Working with various file formats (PDF, DOCX, XLSX, PPTX)",
         t_l6: "Following skill workflows (frontend-dev, fullstack-dev, flutter-dev, etc.)",
         t_ask: "What would you like to work on today?",
+        t_hello: "Session resumed.<br><br>Memory restored for productization, README polish, and provider fallback hardening. Today you can inspect the runtime, replay sessions, preview rewinds, and verify readiness before you run.",
+        t_l1: "Review what the memory layer already knows about the repo with /memory",
+        t_l2: "Inspect or replay durable sessions with /session and /session-replay latest",
+        t_l3: "Preview safe rollback paths with /rewind-preview latest",
+        t_l4: "Check provider and fallback coverage with /readiness",
+        t_l5: "Keep real repository work inspectable instead of hiding it behind a chat shell",
+        t_l6: "Track why the runtime continued, verified, widened, or stopped",
+        t_ask: "What should MiniCode help you ship next?",
         t_prompt: "prompt",
         t_hints: "<strong>prompt</strong> Enter send | /help commands | Esc clear | Ctrl+C exit",
-        t_input: "Ask for code, files, tasks, or MCP tools",
+        t_input: "/memory  /session  /rewind-preview latest  /readiness",
         t_ready: "Ready",
-        t_tools: "tools <span>on</span> | skills <span>on</span>",
-        tech_strip: "Built with modern architectures",
-        tech_1: "Model-Tool-Loop",
-        tech_2: "Terminal UI",
-        tech_3: "MCP Protocol",
-        tech_4: "Diff Review",
-        tech_5: "Local Skills",
+        t_tools: "memory <span>on</span> | tools <span>on</span> | rewind <span>armed</span>",
+        tech_strip: "Built for observable local workflows",
+        tech_1: "Memory Continuity",
+        tech_2: "Session Replay",
+        tech_3: "Rewind Safety",
+        tech_4: "Runtime Traces",
+        tech_5: "Provider Readiness",
         why_title: "Why MiniCode?",
         why_desc: "MiniCode heavily borrows design patterns from Claude Code, stripping away bloated platform features to focus entirely on the core AI-developer interaction loop. It is the perfect fit if you are looking for:",
         why_1_h: "A lightweight assistant",

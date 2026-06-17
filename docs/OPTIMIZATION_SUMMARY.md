@@ -46,7 +46,7 @@
 
 ### Phase 3 — 导入独立模块
 
-从 `py-src/minicode/` 导入 4 个完整但未集成的模块：
+从当时独立的 `py-src/minicode/` 镜像（该镜像现已移除）导入 4 个完整但未集成的模块：
 - `agent_router.py` — 任务复杂度分类 + 模型路由
 - `model_switcher.py` — 运行时模型热切换
 - `agent_reflection.py` — 任务后自省

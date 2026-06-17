@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Protocol
+
+from minicode.logging_config import get_logger, log_tool_execution
 
 
 # ---------------------------------------------------------------------------
@@ -311,42 +314,57 @@ class ToolRegistry:
         if tool is None:
             return ToolResult(ok=False, output=f"Unknown tool: {tool_name}")
 
+        _logger = get_logger("tools")
+        _start = time.monotonic()
         try:
             # Phase 1: Input validation (with error context)
             try:
                 parsed = tool.validator(input_data)
             except (ValueError, TypeError, KeyError) as ve:
+                log_tool_execution(
+                    tool_name, False, (time.monotonic() - _start) * 1000,
+                    error=f"input validation: {ve}",
+                )
                 return ToolResult(
                     ok=False,
                     output=f"Input validation error in {tool_name}: {ve}\n"
                            f"Input was: {str(input_data)[:200]}"
                 )
-            
+
             # Phase 2: Execution (with crash protection)
             result = tool.run(parsed, context)
-            
+
             # Phase 3: Output sanitization
             if result.output is None:
                 result.output = ""
-            
+
             # Smart truncation for large outputs
             if result.output and len(result.output) > _LARGE_OUTPUT_THRESHOLD:
                 result.output = _smart_truncate_output(result.output, tool_name)
-            
+
+            log_tool_execution(
+                tool_name, bool(result.ok), (time.monotonic() - _start) * 1000,
+                error=None if result.ok else (result.output or "")[:200],
+            )
             return result
-            
+
         except (KeyboardInterrupt, SystemExit):
             # These should always propagate upward
             raise
         except Exception as error:  # noqa: BLE001
             # Global safety net: convert any unhandled exception to error result
             # This prevents a single buggy tool from crashing the entire session
+            duration_ms = (time.monotonic() - _start) * 1000
+            # Persist the crash to the log file (searchable) while still
+            # returning a ToolResult to the caller (issue #5).
+            _logger.exception("Tool %s crashed", tool_name)
+            log_tool_execution(tool_name, False, duration_ms, error=str(error))
             import traceback
             tb_lines = traceback.format_exception(type(error), error, error.__traceback__)
             # Include last 5 lines of traceback for debugging
             tb_excerpt = "".join(tb_lines[-5:]).strip()
             error_type = type(error).__name__
-            
+
             return ToolResult(
                 ok=False,
                 output=f"[{error_type}] Tool {tool_name} crashed: {error}\n"

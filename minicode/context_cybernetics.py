@@ -57,6 +57,11 @@ from .context_compactor import (
 )
 
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from minicode.feedback_controller import SystemState
+
 class AnomalyType(Enum):
     SUDDEN_SPIKE = auto()
     ACCELERATING_GROWTH = auto()

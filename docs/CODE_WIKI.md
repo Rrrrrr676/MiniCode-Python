@@ -2,6 +2,8 @@
 
 > MiniCode —— 轻量、开源、多语言实现的 AI 编码代理（Agent），灵感源自 Claude Code。
 
+> ⚠️ **部分内容过时（2026-06-16）**：本文档的部分目录树与模块清单描述的是早期 `py-src/minicode/` 镜像，该镜像及其 `gateway.py`/`protocol.py`/`safe_execution.py`/`cron_runner.py`/`agent_protocol.py`/`context_isolation.py` 已在产品化中移除。**当前规范实现是仓库根目录的 `minicode/` 包，准确结构见 [`STRUCTURE.md`](STRUCTURE.md)。** 本文档保留作历史参考，不再逐行同步。
+
 ---
 
 ## 1. 项目概述 (Project Overview)
@@ -395,7 +397,7 @@ minicode/
 - **回调机制**：`onToolStart`、`onToolResult`、`onAssistantMessage`、`onProgressMessage`
 - **错误计数**：跟踪工具错误次数，影响错误恢复策略
 
-**Python 版本**（[agent_loop.py](file:///d:/Desktop/minicode/py-src/minicode/agent_loop.py)）：
+**Python 版本**（[agent_loop.py](file:///d:/Desktop/minicode/minicode/agent_loop.py)）：
 
 - 与 TS 版本逻辑对等，使用 Python 异步编程模式
 - 额外支持：成本追踪、工作记忆集成、上下文压缩
@@ -590,7 +592,7 @@ description: 头脑风暴和创意生成
 
 **职责**：管理多种 LLM 后端，提供统一的调用接口。
 
-**模型注册表**（Python [model_registry.py](file:///d:/Desktop/minicode/py-src/minicode/model_registry.py)）：
+**模型注册表**（Python [model_registry.py](file:///d:/Desktop/minicode/minicode/model_registry.py)）：
 
 ```python
 ModelRegistry:
@@ -625,7 +627,7 @@ ModelAdapter:
 
 - **上下文窗口管理**：跟踪当前上下文大小，接近限制时触发压缩
 - **上下文压缩**：保留关键信息，压缩历史消息
-- **上下文隔离**（[context_isolation.py](file:///d:/Desktop/minicode/py-src/minicode/context_isolation.py)）：不同会话/任务的上下文隔离
+- **上下文隔离**（[context_isolation.py](file:///d:/Desktop/minicode/minicode/context_isolation.py)）：不同会话/任务的上下文隔离
 
 ### 5.10 Memory System (memory.py)
 
@@ -1393,10 +1395,10 @@ interface ModelResponse {
 | TS Agent Loop | [ts-src/src/agent-loop.ts](file:///d:/Desktop/minicode/ts-src/src/agent-loop.ts) |
 | TS 工具 | [ts-src/src/tools/](file:///d:/Desktop/minicode/ts-src/src/tools/) |
 | TS TUI | [ts-src/src/tty-app.ts](file:///d:/Desktop/minicode/ts-src/src/tty-app.ts) |
-| Python 入口 | [py-src/minicode/main.py](file:///d:/Desktop/minicode/py-src/minicode/main.py) |
-| Python Agent Loop | [py-src/minicode/agent_loop.py](file:///d:/Desktop/minicode/py-src/minicode/agent_loop.py) |
-| Python 工具 | [py-src/minicode/tools/](file:///d:/Desktop/minicode/py-src/minicode/tools/) |
-| Python TUI | [py-src/minicode/tty_app.py](file:///d:/Desktop/minicode/py-src/minicode/tty_app.py) |
+| Python 入口 | [minicode/main.py](file:///d:/Desktop/minicode/minicode/main.py) |
+| Python Agent Loop | [minicode/agent_loop.py](file:///d:/Desktop/minicode/minicode/agent_loop.py) |
+| Python 工具 | [minicode/tools/](file:///d:/Desktop/minicode/minicode/tools/) |
+| Python TUI | [minicode/tty_app.py](file:///d:/Desktop/minicode/minicode/tty_app.py) |
 | 插件 | [superpowers-zh/](file:///d:/Desktop/minicode/superpowers-zh/) |
 | MCP 配置 | [.mcp.json](file:///d:/Desktop/minicode/.mcp.json) |
 

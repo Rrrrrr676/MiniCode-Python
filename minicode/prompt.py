@@ -156,7 +156,10 @@ def build_system_prompt_bundle(
     # --- Dynamic Suffix (Per-turn) ---
     # Permission context
     if permission_summary:
-        perm_text = "Permission context:\n" + "\n".join(permission_summary)
+        # Coerce/filter so a None element in the summary can't crash join().
+        perm_text = "Permission context:\n" + "\n".join(
+            str(p) for p in permission_summary if p is not None
+        )
         pipeline.register_dynamic("permissions", lambda: perm_text)
 
     # Skills section with conditional injection
@@ -165,7 +168,10 @@ def build_system_prompt_bundle(
         def _build_skills():
             lines = ["Available skills:"]
             lines.extend(
-                f"- {skill['name']}: {skill['description']}" for skill in skills
+                f"- {skill.get('name', '?')}: {skill.get('description', '')}"
+                if isinstance(skill, dict)
+                else f"- {skill}"
+                for skill in skills
             )
             lines.extend([
                 "",
@@ -194,19 +200,29 @@ def build_system_prompt_bundle(
     # MCP servers section
     mcp_servers = extras.get("mcpServers", [])
     if mcp_servers:
+        def _server_line(server) -> str:
+            # Guard each entry so one malformed server (missing keys / non-dict)
+            # can't crash the whole system-prompt build.
+            if not isinstance(server, dict):
+                return f"- (malformed MCP server entry: {server!r})"
+            parts = [
+                f"- {server.get('name', '(unnamed)')}: "
+                f"{server.get('status', 'unknown')}, tools={server.get('toolCount', 0)}"
+            ]
+            if server.get("resourceCount") is not None:
+                parts.append(f", resources={server['resourceCount']}")
+            if server.get("promptCount") is not None:
+                parts.append(f", prompts={server['promptCount']}")
+            if server.get("protocol"):
+                parts.append(f", protocol={server['protocol']}")
+            if server.get("error"):
+                parts.append(f" ({server['error']})")
+            return "".join(parts)
+
         def _build_mcp():
             lines = ["Configured MCP servers:"]
-            lines.extend(
-                "- "
-                + server["name"]
-                + f": {server['status']}, tools={server['toolCount']}"
-                + (f", resources={server['resourceCount']}" if server.get("resourceCount") is not None else "")
-                + (f", prompts={server['promptCount']}" if server.get("promptCount") is not None else "")
-                + (f", protocol={server['protocol']}" if server.get("protocol") else "")
-                + (f" ({server['error']})" if server.get("error") else "")
-                for server in mcp_servers
-            )
-            if any(server.get("status") == "connected" for server in mcp_servers):
+            lines.extend(_server_line(server) for server in mcp_servers)
+            if any((server.get("status") if isinstance(server, dict) else None) == "connected" for server in mcp_servers):
                 lines.append(
                     "Connected MCP tools are already exposed in the tool list with names prefixed like mcp__server__tool. "
                     "Use list_mcp_resources/read_mcp_resource and list_mcp_prompts/get_mcp_prompt when a server exposes those capabilities."
@@ -214,11 +230,14 @@ def build_system_prompt_bundle(
             # Sequential thinking server detection
             sequential_servers = [
                 server for server in mcp_servers
-                if "sequential" in server.get("name", "").lower()
-                or "branch-thinking" in server.get("name", "").lower()
-                or "think" in server.get("name", "").lower()
+                if isinstance(server, dict)
+                and (
+                    "sequential" in server.get("name", "").lower()
+                    or "branch-thinking" in server.get("name", "").lower()
+                    or "think" in server.get("name", "").lower()
+                )
             ]
-            if any(server.get("status") == "connected" for server in sequential_servers):
+            if any(isinstance(s, dict) and s.get("status") == "connected" for s in sequential_servers):
                 lines.extend([
                     "",
                     "SEQUENTIAL THINKING MCP SERVER IS CONNECTED!",
