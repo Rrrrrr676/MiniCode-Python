@@ -39,5 +39,4 @@ jobs:
         run: python -m pytest tests/test_packaging.py -q
 
       - name: Run test suite
-        continue-on-error: true
-        run: python -m pytest -q -x --tb=short
+        run: python -m pytest -q --tb=short
