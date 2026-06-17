@@ -5,7 +5,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from minicode.api_retry import (
     RETRYABLE_STATUS,
@@ -13,6 +13,9 @@ from minicode.api_retry import (
 )
 from minicode.state import add_cost, record_api_error, update_context_usage
 from minicode.types import AgentStep, StepDiagnostics
+
+if TYPE_CHECKING:
+    from minicode.state import Store, AppState
 
 DEFAULT_MAX_RETRIES = 4
 

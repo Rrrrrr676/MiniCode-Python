@@ -507,8 +507,10 @@ def test_agent_turn_does_not_bounce_between_failed_provider_fallback_models(monk
     assert "not a local retry loop" in messages[-1]["content"].lower()
     assert "active channel:" in messages[-1]["content"].lower()
     assert "next step:" in messages[-1]["content"].lower()
-    assert "add fallbackmodels or " in messages[-1]["content"].lower()
-    assert "to enable model failover" in messages[-1]["content"].lower()
+    assert "deepseek-v4-pro[1m] failed" in messages[-1]["content"].lower()
+    # Provider-specific fallback guidance varies by runtime; check for the
+    # invariant substring instead of the exact provider-prefixed message.
+    assert "fallbackmodels" in messages[-1]["content"].lower()
     assert created_models[0] == "claude-haiku-3-20240307"
     assert "deepseek-v4-pro[1m]" not in created_models
     assert len(created_models) == len(set(created_models))
@@ -709,3 +711,97 @@ def test_agent_turn_uses_default_runtime_fallback_chain_without_explicit_configu
     assert messages[-1] == {"role": "assistant", "content": "ok via default fallback"}
     assert seen["model"] == "gpt-4o"
     assert any(event.category == "recovery" and "gpt-4o" in event.message for event in runtime_events)
+
+
+def test_model_switcher_bounds_custom_openai_host_fallbacks(monkeypatch) -> None:
+    registry = ToolRegistry([])
+    runtime = {
+        "model": "gpt5.5",
+        "openaiApiKey": "openai-key",
+        "openaiBaseUrl": "https://www.cctq.ai",
+    }
+
+    monkeypatch.delenv("MINI_CODE_MODEL_FALLBACKS", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL_FALLBACKS", raising=False)
+    monkeypatch.setattr(
+        "minicode.model_switcher.build_provider_config",
+        lambda model, runtime=None: SimpleNamespace(
+            api_key="openai-key",
+            base_url="https://www.cctq.ai",
+        ),
+    )
+
+    switcher = ModelSwitcher(
+        current_model="gpt5.5",
+        current_runtime=runtime,
+        current_tools=registry,
+    )
+    switcher.record_runtime_failure("gpt5.5")
+
+    assert switcher._fallback_candidates() == ["gpt-4o", "gpt-4o-mini"]
+
+
+def test_agent_turn_provider_outage_guidance_prefers_provider_exposed_models_when_default_openai_failover_exists(monkeypatch) -> None:
+    registry = ToolRegistry([])
+
+    monkeypatch.delenv("MINI_CODE_MODEL_FALLBACKS", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL_FALLBACKS", raising=False)
+    monkeypatch.setattr(
+        "minicode.model_switcher.build_provider_config",
+        lambda model, runtime=None: SimpleNamespace(
+            api_key="openai-key",
+            base_url="https://www.cctq.ai",
+        ),
+    )
+    monkeypatch.setattr(
+        "minicode.model_switcher.create_model_adapter",
+        lambda model, tools, runtime=None, force_mock=False: NamedProviderUnavailableModel(model),
+    )
+
+    messages = run_agent_turn(
+        model=NamedProviderUnavailableModel("gpt5.5"),
+        tools=registry,
+        messages=[{"role": "system", "content": "sys"}],
+        cwd=".",
+        runtime={
+            "model": "gpt5.5",
+            "openaiApiKey": "openai-key",
+            "openaiBaseUrl": "https://www.cctq.ai",
+        },
+    )
+
+    final_message = messages[-1]["content"].lower()
+    assert "provider availability failure" in final_message
+    assert "active channel: openai via openaiapikey/openaibaseurl" in final_message
+    assert "default failover is already available" in final_message
+    assert "gpt-4o, gpt-4o-mini" in final_message
+    assert "provider actually exposes" in final_message
+    assert "add fallbackmodels or openaifallbackmodels to enable model failover" not in final_message
+
+
+def test_model_switcher_bounds_custom_openai_host_fallbacks_with_legacy_api_base_url(monkeypatch) -> None:
+    registry = ToolRegistry([])
+    runtime = {
+        "model": "gpt5.5",
+        "openaiApiKey": "openai-key",
+        "openaiBaseUrl": "https://www.cctq.ai",
+    }
+
+    monkeypatch.delenv("MINI_CODE_MODEL_FALLBACKS", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL_FALLBACKS", raising=False)
+    monkeypatch.setattr(
+        "minicode.model_switcher.build_provider_config",
+        lambda model, runtime=None: SimpleNamespace(
+            api_key="openai-key",
+            api_base_url="https://www.cctq.ai",
+        ),
+    )
+
+    switcher = ModelSwitcher(
+        current_model="gpt5.5",
+        current_runtime=runtime,
+        current_tools=registry,
+    )
+    switcher.record_runtime_failure("gpt5.5")
+
+    assert switcher._fallback_candidates() == ["gpt-4o", "gpt-4o-mini"]

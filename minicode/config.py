@@ -40,6 +40,8 @@ KNOWN_MODELS = [
     "gpt-4o",
     "gpt-4o-mini",
     "gpt-4-turbo",
+    "gpt-5.5",
+    "gpt5.5",
     "o1",
     "o1-mini",
     "o3-mini",
@@ -243,6 +245,12 @@ def describe_fallback_guidance(
     configured = configured_model_fallbacks(runtime, provider_key)
     defaults = default_model_fallbacks(runtime, provider_key, current_model=active_model)
     guidance: list[str] = []
+    provider_specific_key = {
+        "anthropic": "anthropicFallbackModels",
+        "openai": "openaiFallbackModels",
+        "openrouter": "openrouterFallbackModels",
+        "custom": "customFallbackModels",
+    }.get(provider_key, "fallbackModels")
 
     if (
         provider_key == "anthropic"
@@ -255,15 +263,19 @@ def describe_fallback_guidance(
         )
 
     if not configured:
-        provider_specific_key = {
-            "anthropic": "anthropicFallbackModels",
-            "openai": "openaiFallbackModels",
-            "openrouter": "openrouterFallbackModels",
-            "custom": "customFallbackModels",
-        }.get(provider_key, "fallbackModels")
-        guidance.append(
-            f"Add fallbackModels or {provider_specific_key} to enable model failover."
-        )
+        if defaults:
+            preview = ", ".join(defaults[:3])
+            guidance.append(
+                "Default failover is already available for this runtime"
+                f"{': ' + preview if preview else '.'}"
+                " If those models are still unavailable on the current provider, "
+                f"set fallbackModels or {provider_specific_key} to models that the provider actually exposes, "
+                "or switch provider credentials."
+            )
+        else:
+            guidance.append(
+                f"Add fallbackModels or {provider_specific_key} to enable model failover."
+            )
 
     if provider_key in {"anthropic", "custom"}:
         if not runtime.get("openaiApiKey") and not runtime.get("openrouterApiKey") and not runtime.get("customApiKey"):
@@ -280,11 +292,6 @@ def describe_fallback_guidance(
             guidance.append(
                 "No local fallback credentials are configured for OpenAI or custom providers."
             )
-
-    if defaults and not configured:
-        guidance.append(
-            "Default failover can activate only when the matching provider credentials are locally configured."
-        )
 
     ordered: list[str] = []
     seen: set[str] = set()
@@ -387,42 +394,60 @@ def save_mini_code_settings(updates: dict[str, Any]) -> None:
 
 def load_runtime_config(cwd: str | Path | None = None) -> dict[str, Any]:
     effective = load_effective_settings(cwd)
-    env = {**dict(effective.get("env", {})), **os.environ}
+    settings_env = dict(effective.get("env", {}))
+    env = {**settings_env, **os.environ}
+
+    def runtime_setting(name: str, *, prefer_settings_env: bool = False) -> str:
+        if prefer_settings_env:
+            value = settings_env.get(name)
+            if value not in (None, ""):
+                return str(value).strip()
+        value = os.environ.get(name)
+        if value not in (None, ""):
+            return str(value).strip()
+        value = settings_env.get(name)
+        if value not in (None, ""):
+            return str(value).strip()
+        return ""
+
     model = (
         os.environ.get("MINI_CODE_MODEL")
         or effective.get("model")
-        or str(env.get("ANTHROPIC_MODEL", "")).strip()
+        or runtime_setting("ANTHROPIC_MODEL", prefer_settings_env=True)
     )
 
     # --- Provider-specific base URLs ---
     # Anthropic
-    base_url = str(env.get("ANTHROPIC_BASE_URL", "")).strip() or "https://api.anthropic.com"
-    auth_token = str(env.get("ANTHROPIC_AUTH_TOKEN", "")).strip() or None
-    api_key = str(env.get("ANTHROPIC_API_KEY", "")).strip() or None
+    base_url = runtime_setting("ANTHROPIC_BASE_URL", prefer_settings_env=True) or "https://api.anthropic.com"
+    auth_token = runtime_setting("ANTHROPIC_AUTH_TOKEN", prefer_settings_env=True) or None
+    api_key = runtime_setting("ANTHROPIC_API_KEY", prefer_settings_env=True) or None
 
     # OpenAI
     openai_base_url = (
-        str(env.get("OPENAI_BASE_URL", "")).strip()
-        or str(env.get("OPENAI_API_BASE", "")).strip()
+        runtime_setting("OPENAI_BASE_URL", prefer_settings_env=True)
+        or runtime_setting("OPENAI_API_BASE", prefer_settings_env=True)
         or effective.get("openaiBaseUrl", "")
         or "https://api.openai.com"
     )
-    openai_api_key = str(env.get("OPENAI_API_KEY", "")).strip() or effective.get("openaiApiKey", "")
+    openai_api_key = (
+        runtime_setting("OPENAI_API_KEY", prefer_settings_env=True)
+        or effective.get("openaiApiKey", "")
+    )
 
     # OpenRouter
     openrouter_base_url = (
-        str(env.get("OPENROUTER_BASE_URL", "")).strip()
+        runtime_setting("OPENROUTER_BASE_URL", prefer_settings_env=True)
         or "https://openrouter.ai/api"
     )
-    openrouter_api_key = str(env.get("OPENROUTER_API_KEY", "")).strip()
+    openrouter_api_key = runtime_setting("OPENROUTER_API_KEY", prefer_settings_env=True)
 
     # Custom endpoint
     custom_base_url = (
-        str(env.get("CUSTOM_API_BASE_URL", "")).strip()
+        runtime_setting("CUSTOM_API_BASE_URL", prefer_settings_env=True)
         or effective.get("customBaseUrl", "")
     )
     custom_api_key = (
-        str(env.get("CUSTOM_API_KEY", "")).strip()
+        runtime_setting("CUSTOM_API_KEY", prefer_settings_env=True)
         or effective.get("customApiKey", "")
         or openai_api_key
     )
@@ -494,25 +519,26 @@ def load_runtime_config(cwd: str | Path | None = None) -> dict[str, Any]:
 
     return {
         "model": model,
+        "configuredModel": model,
         "baseUrl": base_url,
         "authToken": auth_token,
         "apiKey": api_key,
         "anthropicDefaultSonnetModel": str(
-            env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+            runtime_setting("ANTHROPIC_DEFAULT_SONNET_MODEL", prefer_settings_env=True)
             or effective.get("anthropicDefaultSonnetModel")
-            or env.get("ANTHROPIC_MODEL")
+            or runtime_setting("ANTHROPIC_MODEL", prefer_settings_env=True)
             or effective.get("model", "")
         ).strip(),
         "anthropicDefaultOpusModel": str(
-            env.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+            runtime_setting("ANTHROPIC_DEFAULT_OPUS_MODEL", prefer_settings_env=True)
             or effective.get("anthropicDefaultOpusModel")
-            or env.get("ANTHROPIC_MODEL")
+            or runtime_setting("ANTHROPIC_MODEL", prefer_settings_env=True)
             or effective.get("model", "")
         ).strip(),
         "anthropicDefaultHaikuModel": str(
-            env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+            runtime_setting("ANTHROPIC_DEFAULT_HAIKU_MODEL", prefer_settings_env=True)
             or effective.get("anthropicDefaultHaikuModel")
-            or env.get("ANTHROPIC_MODEL")
+            or runtime_setting("ANTHROPIC_MODEL", prefer_settings_env=True)
             or effective.get("model", "")
         ).strip(),
         "openaiBaseUrl": openai_base_url,
@@ -724,27 +750,32 @@ def format_config_diagnostic(cwd: str | Path | None = None) -> str:
         from minicode.model_registry import detect_provider, Provider
         provider = detect_provider(model_name, config)
         lines.append(f"  Provider: {provider.value}")
+        lines.append(f"  Channel: {describe_provider_channel(config, provider.value)}")
 
-        lines.append(f"  Base URL: {config.get('baseUrl', 'not set')}")
-        if config.get('openaiBaseUrl') and provider in (Provider.OPENAI, Provider.OPENROUTER, Provider.CUSTOM):
-            lines.append(f"  OpenAI Base URL: {config.get('openaiBaseUrl')}")
-        if config.get('openrouterApiKey'):
-            lines.append("  OpenRouter: configured")
-        if config.get('customBaseUrl'):
-            lines.append(f"  Custom Base URL: {config.get('customBaseUrl')}")
+        if provider == Provider.ANTHROPIC:
+            lines.append(f"  Base URL: {config.get('baseUrl', 'not set')}")
+            auth_methods = []
+            if config.get("authToken"):
+                auth_methods.append("ANTHROPIC_AUTH_TOKEN")
+            if config.get("apiKey"):
+                auth_methods.append("ANTHROPIC_API_KEY")
+        elif provider == Provider.OPENAI:
+            lines.append(f"  OpenAI Base URL: {config.get('openaiBaseUrl', 'not set')}")
+            auth_methods = ["OPENAI_API_KEY"] if config.get("openaiApiKey") else []
+        elif provider == Provider.OPENROUTER:
+            lines.append(f"  OpenRouter Base URL: {config.get('openrouterBaseUrl', 'not set')}")
+            auth_methods = ["OPENROUTER_API_KEY"] if config.get("openrouterApiKey") else []
+        elif provider == Provider.CUSTOM:
+            lines.append(f"  Custom Base URL: {config.get('customBaseUrl', 'not set')}")
+            auth_methods = ["CUSTOM_API_KEY"] if config.get("customApiKey") else []
+        else:
+            auth_methods = []
 
-        auth_methods = []
-        if config.get("authToken"):
-            auth_methods.append("ANTHROPIC_AUTH_TOKEN")
-        if config.get("apiKey"):
-            auth_methods.append("ANTHROPIC_API_KEY")
-        if config.get("openaiApiKey"):
-            auth_methods.append("OPENAI_API_KEY")
-        if config.get("openrouterApiKey"):
-            auth_methods.append("OPENROUTER_API_KEY")
-        if config.get("customApiKey"):
-            auth_methods.append("CUSTOM_API_KEY")
         lines.append(f"  Auth: {', '.join(auth_methods) or 'none'}")
+
+        fallback_models = effective_model_fallbacks(config, provider.value, current_model=model_name)
+        if fallback_models:
+            lines.append(f"  Fallback Models: {', '.join(fallback_models)}")
         lines.append(f"  MCP Servers: {len(config.get('mcpServers', {}))}")
         lines.append(f"  Tool Profile: {config.get('toolProfile', 'core')}")
 

@@ -19,6 +19,11 @@ from enum import Enum
 from typing import Any, Callable
 
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from minicode.context_cybernetics import ContextCyberneticsOrchestrator
+
 class FaultSeverity(Enum):
     """Severity of a detected fault."""
     LOW = "low"

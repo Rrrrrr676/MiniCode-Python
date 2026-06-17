@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 import uuid
 from typing import Any, Callable
@@ -14,6 +15,9 @@ _background_tasks: dict[str, dict[str, Any]] = {}
 # Task slot management
 _max_slots: int = 5  # Maximum concurrent background tasks
 _slot_callbacks: dict[str, Callable] = {}  # Completion callbacks
+
+# Thread safety for concurrent tool execution
+_lock = threading.Lock()
 
 
 def _is_process_alive(pid: int) -> bool | None:
@@ -89,26 +93,30 @@ def register_background_shell_task(command: str, pid: int, cwd: str) -> Backgrou
         status="running",
         startedAt=int(time.time() * 1000),
     )
-    _background_tasks[result.taskId] = {
-        "taskId": result.taskId,
-        "type": result.type,
-        "command": result.command,
-        "pid": result.pid,
-        "status": result.status,
-        "startedAt": result.startedAt,
-        "label": command[:60],
-    }
+    with _lock:
+        _background_tasks[result.taskId] = {
+            "taskId": result.taskId,
+            "type": result.type,
+            "command": result.command,
+            "pid": result.pid,
+            "status": result.status,
+            "startedAt": result.startedAt,
+            "label": command[:60],
+        }
     return result
 
 
 def list_background_tasks() -> list[dict[str, Any]]:
     """Return the list of currently tracked background tasks with refreshed status."""
-    return [_refresh_record(record) for record in _background_tasks.values()]
+    with _lock:
+        records = list(_background_tasks.values())
+    return [_refresh_record(record) for record in records]
 
 
 def get_background_task(task_id: str) -> dict[str, Any] | None:
     """Get a single background task by ID with refreshed status."""
-    record = _background_tasks.get(task_id)
+    with _lock:
+        record = _background_tasks.get(task_id)
     if record is None:
         return None
     return _refresh_record(record)
@@ -120,12 +128,15 @@ def get_background_task(task_id: str) -> dict[str, Any] | None:
 
 def get_slot_stats() -> dict[str, Any]:
     """Get current slot usage statistics."""
-    running = sum(1 for r in _background_tasks.values() if r.get("status") == "running")
+    with _lock:
+        running = sum(1 for r in _background_tasks.values() if r.get("status") == "running")
+        total = len(_background_tasks)
+        max_slots = _max_slots
     return {
         "used_slots": running,
-        "max_slots": _max_slots,
-        "available_slots": _max_slots - running,
-        "total_tracked": len(_background_tasks),
+        "max_slots": max_slots,
+        "available_slots": max_slots - running,
+        "total_tracked": total,
     }
 
 
@@ -138,12 +149,14 @@ def can_start_new_task() -> bool:
 def set_max_slots(max_slots: int) -> None:
     """Set the maximum number of concurrent background tasks."""
     global _max_slots
-    _max_slots = max(1, max_slots)  # At least 1 slot
+    with _lock:
+        _max_slots = max(1, max_slots)  # At least 1 slot
 
 
 def register_completion_callback(task_id: str, callback: Callable) -> None:
     """Register a callback for when a task completes."""
-    _slot_callbacks[task_id] = callback
+    with _lock:
+        _slot_callbacks[task_id] = callback
 
 
 def check_completed_tasks() -> list[str]:
@@ -152,16 +165,19 @@ def check_completed_tasks() -> list[str]:
     Returns list of completed task IDs.
     """
     completed: list[str] = []
-    for task_id, record in list(_background_tasks.items()):
+    with _lock:
+        records = list(_background_tasks.items())
+    for task_id, record in records:
         if record.get("status") != "running":
             continue
         refreshed = _refresh_record(record)
         if refreshed["status"] == "running":
             continue
-        _background_tasks[task_id] = refreshed
+        with _lock:
+            _background_tasks[task_id] = refreshed
+            callback = _slot_callbacks.pop(task_id, None)
         completed.append(task_id)
         # Fire callback if registered
-        callback = _slot_callbacks.pop(task_id, None)
         if callback:
             try:
                 callback(task_id, refreshed)

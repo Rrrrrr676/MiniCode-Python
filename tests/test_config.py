@@ -1,7 +1,9 @@
 import minicode.config as config_module
 from minicode.config import (
+    describe_fallback_guidance,
     default_model_fallbacks,
     effective_model_fallbacks,
+    format_config_diagnostic,
     load_runtime_config,
     merge_settings,
     validate_provider_runtime,
@@ -57,6 +59,18 @@ def test_validate_provider_runtime_accepts_openrouter_prefixed_model() -> None:
     assert errors == []
 
 
+def test_validate_provider_runtime_accepts_gpt55_openai_compatible() -> None:
+    errors = validate_provider_runtime(
+        {
+            "model": "gpt5.5",
+            "openaiApiKey": "sk-test",
+            "openaiBaseUrl": "https://www.cctq.ai",
+        }
+    )
+
+    assert errors == []
+
+
 def test_load_runtime_config_includes_runtime_profile(monkeypatch) -> None:
     monkeypatch.setattr(
         config_module,
@@ -104,6 +118,85 @@ def test_load_runtime_config_includes_anthropic_family_defaults(monkeypatch) -> 
     assert runtime["anthropicDefaultSonnetModel"] == "deepseek-v4-pro[1m]"
     assert runtime["anthropicDefaultOpusModel"] == "deepseek-v4-pro[1m]"
     assert runtime["anthropicDefaultHaikuModel"] == "deepseek-v4-pro[1m]"
+
+
+def test_load_runtime_config_prefers_settings_env_for_anthropic_runtime(monkeypatch) -> None:
+    monkeypatch.setattr(
+        config_module,
+        "load_effective_settings",
+        lambda cwd=None: {
+            "model": "gpt5.5",
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://ai.space.cx",
+                "ANTHROPIC_AUTH_TOKEN": "fresh-token",
+                "ANTHROPIC_MODEL": "gpt5.5",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt5.5",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt5.5",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt5.5",
+            },
+        },
+    )
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://openai-proxy.miracleplus.com/v1")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "stale-token")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "deepseek-v4-pro[1m]")
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "deepseek-v4-pro[1m]")
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "deepseek-v4-pro[1m]")
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", "deepseek-v4-pro[1m]")
+    monkeypatch.delenv("MINI_CODE_MODEL", raising=False)
+
+    runtime = load_runtime_config(cwd=".")
+
+    assert runtime["model"] == "gpt5.5"
+    assert runtime["baseUrl"] == "https://ai.space.cx"
+    assert runtime["authToken"] == "fresh-token"
+    assert runtime["anthropicDefaultSonnetModel"] == "gpt5.5"
+    assert runtime["anthropicDefaultOpusModel"] == "gpt5.5"
+    assert runtime["anthropicDefaultHaikuModel"] == "gpt5.5"
+
+
+def test_load_runtime_config_prefers_settings_env_for_openai_runtime(monkeypatch) -> None:
+    monkeypatch.setattr(
+        config_module,
+        "load_effective_settings",
+        lambda cwd=None: {
+            "model": "gpt5.5",
+            "env": {
+                "OPENAI_BASE_URL": "https://www.cctq.ai",
+                "OPENAI_API_KEY": "fresh-openai-token",
+            },
+        },
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://stale.example.com")
+    monkeypatch.setenv("OPENAI_API_KEY", "stale-openai-token")
+    monkeypatch.delenv("MINI_CODE_MODEL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+
+    runtime = load_runtime_config(cwd=".")
+
+    assert runtime["model"] == "gpt5.5"
+    assert runtime["configuredModel"] == "gpt5.5"
+    assert runtime["openaiBaseUrl"] == "https://www.cctq.ai"
+    assert runtime["openaiApiKey"] == "fresh-openai-token"
+
+
+def test_load_runtime_config_preserves_mini_code_model_override(monkeypatch) -> None:
+    monkeypatch.setattr(
+        config_module,
+        "load_effective_settings",
+        lambda cwd=None: {
+            "model": "gpt5.5",
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "fresh-token",
+                "ANTHROPIC_MODEL": "gpt5.5",
+            },
+        },
+    )
+    monkeypatch.setenv("MINI_CODE_MODEL", "gpt-4o")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "deepseek-v4-pro[1m]")
+
+    runtime = load_runtime_config(cwd=".")
+
+    assert runtime["model"] == "gpt-4o"
 
 
 def test_load_runtime_config_includes_structured_fallback_models(monkeypatch) -> None:
@@ -161,6 +254,66 @@ def test_effective_model_fallbacks_prefer_explicit_before_defaults() -> None:
         "gpt-4o",
         "claude-haiku-3-20240307",
     ]
+
+
+def test_format_config_diagnostic_scopes_openai_provider_details(monkeypatch) -> None:
+    monkeypatch.setattr(
+        config_module,
+        "validate_config",
+        lambda cwd=None: (True, []),
+    )
+    monkeypatch.setattr(
+        config_module,
+        "load_runtime_config",
+        lambda cwd=None: {
+            "model": "gpt5.5",
+            "configuredModel": "gpt5.5",
+            "openaiBaseUrl": "https://www.cctq.ai",
+            "openaiApiKey": "openai-key",
+            "authToken": "stale-anthropic-token",
+            "apiKey": "",
+            "baseUrl": "https://ai.space.cx",
+            "customApiKey": "mirrored-custom-key",
+            "customBaseUrl": "",
+            "fallbackModels": [],
+            "openaiFallbackModels": ["gpt-4o", "gpt-4o-mini"],
+            "mcpServers": {},
+            "toolProfile": "core",
+            "globalUserProfilePath": "",
+            "projectUserProfilePath": "",
+            "responseLanguage": "",
+            "responseVerbosity": "",
+        },
+    )
+
+    result = format_config_diagnostic()
+
+    assert "Provider: openai" in result
+    assert "Channel: openai via openaiApiKey/openaiBaseUrl" in result
+    assert "OpenAI Base URL: https://www.cctq.ai" in result
+    assert "Auth: OPENAI_API_KEY" in result
+    assert "Fallback Models: gpt-4o, gpt-4o-mini" in result
+    assert "Base URL: https://ai.space.cx" not in result
+    assert "ANTHROPIC_AUTH_TOKEN" not in result
+    assert "CUSTOM_API_KEY" not in result
+
+
+def test_describe_fallback_guidance_prefers_provider_exposed_models_when_defaults_exist() -> None:
+    guidance = describe_fallback_guidance(
+        {
+            "model": "gpt5.5",
+            "openaiApiKey": "openai-key",
+            "openaiBaseUrl": "https://www.cctq.ai",
+        },
+        provider_name="openai",
+        current_model="gpt5.5",
+    )
+
+    assert guidance
+    assert "default failover is already available" in guidance[0].lower()
+    assert "gpt-4o, gpt-4o-mini" in guidance[0]
+    assert "provider actually exposes" in guidance[0].lower()
+    assert "add fallbackmodels or openaifallbackmodels to enable model failover" not in guidance[0].lower()
 
 
 def test_load_runtime_config_falls_back_to_model_for_missing_anthropic_family_defaults(monkeypatch) -> None:

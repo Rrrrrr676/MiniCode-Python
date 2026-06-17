@@ -255,6 +255,12 @@ _register(ModelInfo("gpt-4o-mini", Provider.OPENAI,
 _register(ModelInfo("gpt-4-turbo", Provider.OPENAI,
     context_window=128_000, max_output_tokens=4_096,
     pricing_input=10.0, pricing_output=30.0))
+_register(ModelInfo("gpt-5.5", Provider.OPENAI,
+    context_window=128_000, max_output_tokens=16_384,
+    pricing_input=3.0, pricing_output=15.0))
+_register(ModelInfo("gpt5.5", Provider.OPENAI,
+    context_window=128_000, max_output_tokens=16_384,
+    pricing_input=3.0, pricing_output=15.0))
 _register(ModelInfo("o1", Provider.OPENAI,
     context_window=200_000, max_output_tokens=100_000,
     pricing_input=15.0, pricing_output=60.0, supports_tools=False))
@@ -347,8 +353,8 @@ def detect_provider(model: str, runtime: dict | None = None) -> Provider:
             return Provider.CUSTOM
 
     # 3. OpenAI detection
-    openai_prefixes = ("gpt-4", "gpt-3.5", "o1-", "o3-", "chatgpt-")
-    openai_exact = {"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o1-mini", "o3-mini"}
+    openai_prefixes = ("gpt-5", "gpt-4", "gpt-3.5", "gpt5", "o1-", "o3-", "chatgpt-")
+    openai_exact = {"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-5.5", "gpt5.5", "o1", "o1-mini", "o3-mini"}
     if model_lower in openai_exact or any(model_lower.startswith(p) for p in openai_prefixes):
         return Provider.OPENAI
     if os.environ.get("OPENAI_API_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
@@ -437,12 +443,12 @@ def build_provider_config(model: str, runtime: dict | None = None) -> ProviderCo
 
     if provider == Provider.OPENAI:
         base_url = (
-            os.environ.get("OPENAI_BASE_URL", "")
+            runtime.get("openaiBaseUrl", "")
+            or os.environ.get("OPENAI_BASE_URL", "")
             or os.environ.get("OPENAI_API_BASE", "")
-            or runtime.get("openaiBaseUrl", "")
             or "https://api.openai.com"
         ).rstrip("/")
-        api_key = os.environ.get("OPENAI_API_KEY", "") or runtime.get("openaiApiKey", "")
+        api_key = runtime.get("openaiApiKey", "") or os.environ.get("OPENAI_API_KEY", "")
         return ProviderConfig(
             provider=Provider.OPENAI,
             model=model,

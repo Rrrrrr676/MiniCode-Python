@@ -5,6 +5,10 @@ from __future__ import annotations
 import pytest
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "benchmark: mark test as a benchmark test.")
+
+
 # These root-level scripts are manual smoke/integration utilities from earlier
 # development rounds. Normal pytest coverage lives under tests/.
 collect_ignore = [

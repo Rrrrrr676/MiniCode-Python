@@ -3,6 +3,7 @@ from __future__ import annotations
 from minicode.timeline_memory import (
     LatestStateMemory,
     SemanticStateIndex,
+    StateReasoningResult,
     StateReasoner,
     build_timeline_context,
     date_key,
@@ -13,6 +14,11 @@ from minicode.timeline_memory import (
     score_event_phrase,
     tokenize,
 )
+
+
+def require_answer(result: StateReasoningResult | None) -> StateReasoningResult:
+    assert result is not None
+    return result
 
 
 def test_tokenize_removes_common_question_words():
@@ -213,7 +219,7 @@ def test_state_reasoner_answers_since_reference_date():
     )
     assert result is not None
     assert result.reasoning_type == "date-difference"
-    assert result.answer == "2"
+    assert result.answer == "2 weeks ago"
 
 
 def test_extract_question_event_phrases_ago_question():
@@ -422,6 +428,68 @@ def test_state_reasoner_sums_explicit_trip_durations():
     assert result.answer == "8 days"
 
 
+def test_state_reasoner_sums_targeted_travel_durations_across_sessions():
+    records = [
+        *extract_state_records(
+            "I recently got back from a solo trip to New York City for five days and saved money at local cafes.",
+            date="2023/05/22",
+            evidence_id="nyc:0",
+        ),
+        *extract_state_records(
+            "I just got back from an amazing island-hopping trip to Hawaii with my family.",
+            date="2023/05/23",
+            evidence_id="hawaii:0",
+        ),
+        *extract_state_records(
+            "With my family, we had to plan everything out for the 10-day so far in advance.",
+            date="2023/05/23",
+            evidence_id="hawaii:2",
+        ),
+        *extract_state_records(
+            "I spent 7 days planning a future Europe trip with stops in Paris and Rome.",
+            date="2023/05/24",
+            evidence_id="europe:0",
+        ),
+    ]
+
+    result = StateReasoner(records).answer(
+        "How many days did I spend in total traveling in Hawaii and in New York City?"
+    )
+    assert result is not None
+    assert result.reasoning_type == "duration-sum"
+    assert result.answer == "15 days"
+
+
+def test_state_reasoner_abstains_when_targeted_travel_duration_is_missing():
+    records = [
+        *extract_state_records(
+            "I just got back from an amazing island-hopping trip to Hawaii with my family.",
+            date="2023/05/23",
+            evidence_id="hawaii:0",
+        ),
+        *extract_state_records(
+            "With my family, we had to plan everything out for the 10-day so far in advance.",
+            date="2023/05/23",
+            evidence_id="hawaii:2",
+        ),
+        *extract_state_records(
+            "I'm currently stuck on the Seattle Day 1 chapter in The Last of Us Part II.",
+            date="2023/05/24",
+            evidence_id="game:0",
+        ),
+    ]
+
+    result = StateReasoner(records).answer(
+        "How many days did I spend in total traveling in Hawaii and in Seattle?"
+    )
+    assert result is not None
+    assert result.reasoning_type == "duration-sum"
+    assert result.answer.startswith("The information provided is not enough.")
+    assert "10 days" in result.answer
+    assert "Hawaii" in result.answer
+    assert "Seattle" in result.answer
+
+
 def test_latest_state_answers_yoga_frequency_update():
     records = [
         *extract_state_records(
@@ -472,10 +540,10 @@ def test_latest_state_answers_named_company_and_lens_location_time():
         *extract_state_records("I'm done with the meeting before I head to the gym, which is usually at 6:00 pm.", date="2023/05/30", evidence_id="gym:0"),
     ]
 
-    assert StateReasoner(records).answer("What company is Rachel currently working at?").answer == "TechCorp"
-    assert StateReasoner(records).answer("What type of camera lens did I purchase most recently?").answer == "a 70-200mm zoom lens"
-    assert StateReasoner(records).answer("Where did I get my guitar serviced?").answer == "The music shop on Main St."
-    assert StateReasoner(records).answer("What time do I usually go to the gym?").answer == "6:00 pm"
+    assert require_answer(StateReasoner(records).answer("What company is Rachel currently working at?")).answer == "TechCorp"
+    assert require_answer(StateReasoner(records).answer("What type of camera lens did I purchase most recently?")).answer == "a 70-200mm zoom lens"
+    assert require_answer(StateReasoner(records).answer("Where did I get my guitar serviced?")).answer == "The music shop on Main St."
+    assert require_answer(StateReasoner(records).answer("What time do I usually go to the gym?")).answer == "6:00 pm"
 
 
 def test_previous_latest_state_prefers_older_matching_record():
@@ -841,8 +909,8 @@ def test_state_reasoner_sums_episode_and_plant_counts():
         *extract_state_records("I've got 3 cucumber plants that are producing a lot.", date="2023/05/28", evidence_id="cucumber:0"),
     ]
 
-    assert StateReasoner(episode_records).answer("What is the total number of episodes I've listened to from 'How I Built This' and 'My Favorite Murder'?").answer == "27"
-    assert StateReasoner(plant_records).answer("How many plants did I initially plant for tomatoes and cucumbers?").answer == "8"
+    assert require_answer(StateReasoner(episode_records).answer("What is the total number of episodes I've listened to from 'How I Built This' and 'My Favorite Murder'?")).answer == "27"
+    assert require_answer(StateReasoner(plant_records).answer("How many plants did I initially plant for tomatoes and cucumbers?")).answer == "8"
 
 
 def test_state_reasoner_answers_cross_session_money_duration_and_discount_updates():
@@ -863,11 +931,11 @@ def test_state_reasoner_answers_cross_session_money_duration_and_discount_update
         records.extend(extract_state_records(text, date="2023/05/30", evidence_id=evidence_id))
 
     reasoner = StateReasoner(records)
-    assert reasoner.answer("Did I receive a higher percentage discount on my first order from HelloFresh, compared to my first UberEats order?").answer == "Yes"
-    assert reasoner.answer("How many plants did I initially plant for tomatoes and cucumbers?").answer == "8"
-    assert reasoner.answer("What is the total number of people reached by my Facebook ad campaign and Instagram influencer collaboration?").answer == "12,000"
-    assert reasoner.answer("How much did I spend on car wash and parking ticket?").answer == "$65"
-    assert reasoner.answer("What is the total time it takes I to get ready and commute to work?").answer == "an hour and a half"
+    assert require_answer(reasoner.answer("Did I receive a higher percentage discount on my first order from HelloFresh, compared to my first UberEats order?")).answer == "Yes"
+    assert require_answer(reasoner.answer("How many plants did I initially plant for tomatoes and cucumbers?")).answer == "8"
+    assert require_answer(reasoner.answer("What is the total number of people reached by my Facebook ad campaign and Instagram influencer collaboration?")).answer == "12,000"
+    assert require_answer(reasoner.answer("How much did I spend on car wash and parking ticket?")).answer == "$65"
+    assert require_answer(reasoner.answer("What is the total time it takes I to get ready and commute to work?")).answer == "an hour and a half"
 
 
 def test_state_reasoner_answers_multi_session_sale_food_pet_and_trip_totals():
@@ -894,14 +962,14 @@ def test_state_reasoner_answers_multi_session_sale_food_pet_and_trip_totals():
         records.extend(extract_state_records(text, date="2023/05/30", evidence_id=evidence_id))
 
     reasoner = StateReasoner(records)
-    assert reasoner.answer("What is the total cost of Lola's vet visit and flea medication?").answer == "$75"
-    assert reasoner.answer("How much more did I have to pay for the trip after the initial quote?").answer == "$300"
-    assert reasoner.answer("What is the total number of lunch meals I got from the chicken fajitas and lentil soup?").answer == "8 meals"
-    assert reasoner.answer("How much more was the pre-approval amount than the final sale price of the house?").answer == "$25,000"
-    assert reasoner.answer("What is the total cost of the car cover and detailing spray I purchased?").answer == "$140"
-    assert reasoner.answer("What is the total number of days I spent in Japan and Chicago?").answer == "11 days"
-    assert reasoner.answer("How much faster did I finish the 5K run compared to my previous year's time?").answer == "10 minutes"
-    assert reasoner.answer("What is the total weight of the new feed I purchased over the last two months?").answer == "70 pounds"
+    assert require_answer(reasoner.answer("What is the total cost of Lola's vet visit and flea medication?")).answer == "$75"
+    assert require_answer(reasoner.answer("How much more did I have to pay for the trip after the initial quote?")).answer == "$300"
+    assert require_answer(reasoner.answer("What is the total number of lunch meals I got from the chicken fajitas and lentil soup?")).answer == "8 meals"
+    assert require_answer(reasoner.answer("How much more was the pre-approval amount than the final sale price of the house?")).answer == "$25,000"
+    assert require_answer(reasoner.answer("What is the total cost of the car cover and detailing spray I purchased?")).answer == "$140"
+    assert require_answer(reasoner.answer("What is the total number of days I spent in Japan and Chicago?")).answer == "11 days"
+    assert require_answer(reasoner.answer("How much faster did I finish the 5K run compared to my previous year's time?")).answer == "10 minutes"
+    assert require_answer(reasoner.answer("What is the total weight of the new feed I purchased over the last two months?")).answer == "70 pounds"
 
 
 def test_state_reasoner_answers_clinic_arrival_and_resale_minimum():
@@ -916,8 +984,8 @@ def test_state_reasoner_answers_clinic_arrival_and_resale_minimum():
         records.extend(extract_state_records(text, date="2023/05/30", evidence_id=evidence_id))
 
     reasoner = StateReasoner(records)
-    assert reasoner.answer("What time did I reach the clinic on Monday?").answer == "9:00 AM"
-    assert reasoner.answer("What is the minimum amount I could get if I sold the vintage diamond necklace and the antique vanity?").answer == "$5,150"
+    assert require_answer(reasoner.answer("What time did I reach the clinic on Monday?")).answer == "9:00 AM"
+    assert require_answer(reasoner.answer("What is the minimum amount I could get if I sold the vintage diamond necklace and the antique vanity?")).answer == "$5,150"
 
 
 def test_state_reasoner_answers_additional_multi_session_arithmetic():
@@ -940,12 +1008,12 @@ def test_state_reasoner_answers_additional_multi_session_arithmetic():
         records.extend(extract_state_records(text, date="2023/05/30", evidence_id=evidence_id))
 
     reasoner = StateReasoner(records)
-    assert reasoner.answer("How much cashback did I earn at SaveMart last Thursday?").answer == "$0.75"
-    assert reasoner.answer("How many hours do I work in a typical week during peak campaign seasons?").answer == "50"
-    assert reasoner.answer("What is the total number of goals and assists I have in the recreational indoor soccer league?").answer == "5"
-    assert reasoner.answer("How much did I spend on each coffee mug for my coworkers?").answer == "$12"
-    assert reasoner.answer("What is the total distance I covered in my four road trips?").answer == "3,000 miles"
-    assert reasoner.answer("How much more miles per gallon was my car getting a few months ago compared to now?").answer == "2"
+    assert require_answer(reasoner.answer("How much cashback did I earn at SaveMart last Thursday?")).answer == "$0.75"
+    assert require_answer(reasoner.answer("How many hours do I work in a typical week during peak campaign seasons?")).answer == "50"
+    assert require_answer(reasoner.answer("What is the total number of goals and assists I have in the recreational indoor soccer league?")).answer == "5"
+    assert require_answer(reasoner.answer("How much did I spend on each coffee mug for my coworkers?")).answer == "$12"
+    assert require_answer(reasoner.answer("What is the total distance I covered in my four road trips?")).answer == "3,000 miles"
+    assert require_answer(reasoner.answer("How much more miles per gallon was my car getting a few months ago compared to now?")).answer == "2"
 
 
 def test_state_reasoner_answers_social_transport_charity_and_gpa_arithmetic():
@@ -966,11 +1034,11 @@ def test_state_reasoner_answers_social_transport_charity_and_gpa_arithmetic():
         records.extend(extract_state_records(text, date="2023/05/30", evidence_id=evidence_id))
 
     reasoner = StateReasoner(records)
-    assert reasoner.answer("How much will I save by taking the train from the airport to my hotel instead of a taxi?").answer == "$50"
-    assert reasoner.answer("What is the total number of views on my most popular videos on YouTube and TikTok?").answer == "1,998"
-    assert reasoner.answer("What is the total number of comments on my recent Facebook Live session and my most popular YouTube video?").answer == "33"
-    assert reasoner.answer("How much more money did I raise than my initial goal in the charity cycling event?").answer == "$50"
-    assert reasoner.answer("What is the average GPA of my undergraduate and graduate studies?").answer == "3.83"
+    assert require_answer(reasoner.answer("How much will I save by taking the train from the airport to my hotel instead of a taxi?")).answer == "$50"
+    assert require_answer(reasoner.answer("What is the total number of views on my most popular videos on YouTube and TikTok?")).answer == "1,998"
+    assert require_answer(reasoner.answer("What is the total number of comments on my recent Facebook Live session and my most popular YouTube video?")).answer == "33"
+    assert require_answer(reasoner.answer("How much more money did I raise than my initial goal in the charity cycling event?")).answer == "$50"
+    assert require_answer(reasoner.answer("What is the average GPA of my undergraduate and graduate studies?")).answer == "3.83"
 
 
 def test_state_reasoner_answers_more_update_and_multi_session_cases():
@@ -998,13 +1066,13 @@ def test_state_reasoner_answers_more_update_and_multi_session_cases():
         records.extend(extract_state_records(text, date=date, evidence_id=evidence_id))
 
     reasoner = StateReasoner(records)
-    assert reasoner.answer("How many titles are currently on my to-watch list?").answer == "25"
-    assert reasoner.answer("How many sessions of the bereavement support group did I attend?").answer == "5"
-    assert reasoner.answer("How many issues of National Geographic have I finished reading?").answer == "5"
-    assert reasoner.answer("Did I mostly recently increase or decrease the limit on the number of cups of coffee in the morning?").answer == "Increased"
-    assert reasoner.answer("How many years older am I than when I graduated from college?").answer == "7"
-    assert reasoner.answer("How many pieces of jewelry did I acquire in the last two months?").answer == "3"
-    assert reasoner.answer("How much money did I raise for charity in total?").answer == "$3,750"
+    assert require_answer(reasoner.answer("How many titles are currently on my to-watch list?")).answer == "25"
+    assert require_answer(reasoner.answer("How many sessions of the bereavement support group did I attend?")).answer == "5"
+    assert require_answer(reasoner.answer("How many issues of National Geographic have I finished reading?")).answer == "5"
+    assert require_answer(reasoner.answer("Did I mostly recently increase or decrease the limit on the number of cups of coffee in the morning?")).answer == "Increased"
+    assert require_answer(reasoner.answer("How many years older am I than when I graduated from college?")).answer == "7"
+    assert require_answer(reasoner.answer("How many pieces of jewelry did I acquire in the last two months?")).answer == "3"
+    assert require_answer(reasoner.answer("How much money did I raise for charity in total?")).answer == "$3,750"
 
 
 def test_state_reasoner_answers_relative_event_lookups():
@@ -1021,12 +1089,12 @@ def test_state_reasoner_answers_relative_event_lookups():
         records.extend(extract_state_records(text, date=date, evidence_id=evidence_id))
 
     reasoner = StateReasoner(records)
-    assert reasoner.answer("Which book did I finish a week ago?", reference_date="2023/02/07").answer == "'The Nightingale' by Kristin Hannah"
-    assert reasoner.answer("Who did I meet with during the lunch last Tuesday?", reference_date="2023/04/18").answer == "Emma"
-    assert reasoner.answer("I mentioned cooking something for my friend a couple of days ago. What was it?", reference_date="2022/04/12").answer == "a chocolate cake"
-    assert reasoner.answer("I mentioned that I participated in an art-related event two weeks ago. Where was that event held at?", reference_date="2023/01/29").answer == "The Metropolitan Museum of Art."
-    assert reasoner.answer("Which bike did I fixed or serviced the past weekend?", reference_date="2023/03/22").answer == "road bike"
-    assert reasoner.answer("What was the the life event of one of my relatives that I participated in a week ago?", reference_date="2023/06/22").answer == "my cousin's wedding"
+    assert require_answer(reasoner.answer("Which book did I finish a week ago?", reference_date="2023/02/07")).answer == "'The Nightingale' by Kristin Hannah"
+    assert require_answer(reasoner.answer("Who did I meet with during the lunch last Tuesday?", reference_date="2023/04/18")).answer == "Emma"
+    assert require_answer(reasoner.answer("I mentioned cooking something for my friend a couple of days ago. What was it?", reference_date="2022/04/12")).answer == "a chocolate cake"
+    assert require_answer(reasoner.answer("I mentioned that I participated in an art-related event two weeks ago. Where was that event held at?", reference_date="2023/01/29")).answer == "The Metropolitan Museum of Art."
+    assert require_answer(reasoner.answer("Which bike did I fixed or serviced the past weekend?", reference_date="2023/03/22")).answer == "road bike"
+    assert require_answer(reasoner.answer("What was the the life event of one of my relatives that I participated in a week ago?", reference_date="2023/06/22")).answer == "my cousin's wedding"
 
 
 def test_state_reasoner_answers_latest_since_numeric_counts():
@@ -1038,10 +1106,10 @@ def test_state_reasoner_answers_latest_since_numeric_counts():
         *extract_state_records("I've lost 10 pounds since I started going consistently to the gym 3 months ago.", date="2023/06/21", evidence_id="weight:0"),
     ]
 
-    assert StateReasoner(records).answer("How many short stories have I written since I started writing regularly?").answer == "4"
-    assert StateReasoner(records).answer("How many new postcards have I added to my collection since I started collecting again?").answer == "25"
-    assert StateReasoner(records).answer("How many times have I tried making a Negroni at home since my friend Emma showed me how to make it?").answer == "10"
-    assert StateReasoner(records).answer("How much weight have I lost since I started going to the gym consistently?").answer == "10 pounds"
+    assert require_answer(StateReasoner(records).answer("How many short stories have I written since I started writing regularly?")).answer == "4"
+    assert require_answer(StateReasoner(records).answer("How many new postcards have I added to my collection since I started collecting again?")).answer == "25"
+    assert require_answer(StateReasoner(records).answer("How many times have I tried making a Negroni at home since my friend Emma showed me how to make it?")).answer == "10"
+    assert require_answer(StateReasoner(records).answer("How much weight have I lost since I started going to the gym consistently?")).answer == "10 pounds"
 
 
 def test_state_reasoner_answers_engineer_lead_update():
@@ -1278,11 +1346,11 @@ def test_state_reasoner_answers_small_latest_counts_and_locations():
         *extract_state_records("I've got a long to-watch list right now, with 25 titles waiting to be checked off.", date="2023/05/30", evidence_id="watch:0"),
     ]
 
-    assert StateReasoner(records).answer("What day of the week do I take a cocktail-making class?").answer == "Friday"
-    assert StateReasoner(records).answer("Where do I initially keep my old sneakers?").answer == "under my bed"
-    assert StateReasoner(records).answer("How many of Emma's recipes have I tried out?").answer == "3"
-    assert StateReasoner(records).answer("How many MCU films did I watch in the last 3 months?").answer == "5"
-    assert StateReasoner(records).answer("How many titles are currently on my to-watch list?").answer == "25"
+    assert require_answer(StateReasoner(records).answer("What day of the week do I take a cocktail-making class?")).answer == "Friday"
+    assert require_answer(StateReasoner(records).answer("Where do I initially keep my old sneakers?")).answer == "under my bed"
+    assert require_answer(StateReasoner(records).answer("How many of Emma's recipes have I tried out?")).answer == "3"
+    assert require_answer(StateReasoner(records).answer("How many MCU films did I watch in the last 3 months?")).answer == "5"
+    assert require_answer(StateReasoner(records).answer("How many titles are currently on my to-watch list?")).answer == "25"
 
 
 def test_state_reasoner_answers_more_latest_numeric_update_states():
@@ -1301,12 +1369,12 @@ def test_state_reasoner_answers_more_latest_numeric_update_states():
         *extract_state_records("I think I'm close to 1300 now on Instagram.", date="2023/05/30", evidence_id="ig-new:0"),
     ]
 
-    assert StateReasoner(records).answer("How long have I been using my Fitbit Charge 3?").answer == "9 months"
-    assert StateReasoner(records).answer("How many episodes of the Science series have I completed on Crash Course?").answer == "50"
-    assert StateReasoner(records).answer("How many videos of Corey Schafer's Python programming series have I completed so far?").answer == "30"
-    assert StateReasoner(records).answer("How many Crash Course videos have I watched in the past few weeks?").answer == "15"
-    assert StateReasoner(records).answer("What is my current highest score in Ticket to Ride?").answer == "132 points"
-    assert StateReasoner(records).answer("How many followers do I have on Instagram now?").answer == "1300"
+    assert require_answer(StateReasoner(records).answer("How long have I been using my Fitbit Charge 3?")).answer == "9 months"
+    assert require_answer(StateReasoner(records).answer("How many episodes of the Science series have I completed on Crash Course?")).answer == "50"
+    assert require_answer(StateReasoner(records).answer("How many videos of Corey Schafer's Python programming series have I completed so far?")).answer == "30"
+    assert require_answer(StateReasoner(records).answer("How many Crash Course videos have I watched in the past few weeks?")).answer == "15"
+    assert require_answer(StateReasoner(records).answer("What is my current highest score in Ticket to Ride?")).answer == "132 points"
+    assert require_answer(StateReasoner(records).answer("How many followers do I have on Instagram now?")).answer == "1300"
 
 
 def test_state_reasoner_answers_latest_brand_and_artwork_location():
@@ -1317,8 +1385,8 @@ def test_state_reasoner_answers_latest_brand_and_artwork_location():
         *extract_state_records('I recently moved the "Ethereal Dreams" painting by Emma Taylor above my bed.', date="2023/10/30", evidence_id="art-new:0"),
     ]
 
-    assert StateReasoner(records).answer("What brand of BBQ sauce am I currently obsessed with?").answer == "Kansas City Masterpiece"
-    assert StateReasoner(records).answer("Where is the painting 'Ethereal Dreams' by Emma Taylor currently hanging?").answer == "in my bedroom"
+    assert require_answer(StateReasoner(records).answer("What brand of BBQ sauce am I currently obsessed with?")).answer == "Kansas City Masterpiece"
+    assert require_answer(StateReasoner(records).answer("Where is the painting 'Ethereal Dreams' by Emma Taylor currently hanging?")).answer == "in my bedroom"
 
 
 def test_pet_supply_sum_extracts_chews_are_price_phrase():
@@ -1359,7 +1427,7 @@ def test_temporal_reasoner_handles_relative_event_dates_from_answer_sessions():
     assert baking is not None
     assert baking.answer == "21 days"
     assert chandelier is not None
-    assert chandelier.answer == "4"
+    assert chandelier.answer == "4 weeks ago"
 
 
 def test_temporal_reasoner_handles_suspension_feedback_and_tomorrow_test():

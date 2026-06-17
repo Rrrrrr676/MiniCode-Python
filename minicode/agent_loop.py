@@ -41,27 +41,22 @@ from minicode.runtime_profiles import resolve_runtime_profile
 
 # 工程控制论集成
 from minicode.cybernetic_orchestrator import CyberneticOrchestrator
-from minicode.cybernetic_supervisor import CyberneticSupervisor, save_supervisor_report
+from minicode.cybernetic_supervisor import save_supervisor_report
 from minicode.feedforward_controller import FeedforwardController
 
 # 高级控制论模块
-from minicode.adaptive_pid_tuner import AdaptivePIDTuner
-from minicode.state_observer import StateObserver, MeasurementVector
-from minicode.decoupling_controller import DecouplingController
-from minicode.predictive_controller import PredictiveController
+from minicode.state_observer import MeasurementVector
 from minicode.self_healing_engine import SelfHealingEngine
 
 # 任务进度控制
-from minicode.progress_controller import ProgressController, ProgressSignal, ProgressAction
+from minicode.progress_controller import ProgressSignal, ProgressAction
 
 # 记忆注入和模型选择控制
-from minicode.memory_injector import MemoryInjectionController, MemoryInjectionSignal, MemoryInjector
-from minicode.model_registry import ModelSelectionController, ModelSelectionSignal
+from minicode.memory_injector import MemoryInjectionSignal, MemoryInjector
+from minicode.model_registry import ModelSelectionSignal
 
 # 智能路由与自省 (Phase 3 导入)
-from minicode.smart_router import SmartRouter, TaskOutcome
-from minicode.agent_reflection import ReflectionEngine
-from minicode.model_switcher import ModelSwitcher
+from minicode.smart_router import TaskOutcome
 
 # 上下文管理集成 (Claude Code-style + Engineering Cybernetics)
 from minicode.context_compactor import (
@@ -70,6 +65,8 @@ from minicode.context_compactor import (
 )
 from minicode.context_cybernetics import ContextCyberneticsOrchestrator
 from minicode.cost_control import CostControlLoop
+from minicode.micro_compact import MicroCompactor
+from minicode.circuit_breaker import CompactionCircuitBreaker
 from minicode.memory import MemoryManager
 from minicode.turn_kernel import (
     TurnPreludeState,
@@ -215,14 +212,20 @@ def _summarize_model_api_failure(
             "no viable fallback models were available" in combined.lower()
             and any(_looks_like_provider_availability_error(item) for item in fallback_errors + [str(error)])
         ):
-            model_label = active_model_id or "the active model"
             runtime = runtime or {}
-            provider = detect_provider(model_label, runtime).value if model_label else "unknown"
+            guidance_model = (
+                str(runtime.get("configuredModel", "")).strip()
+                or str(runtime.get("model", "")).strip()
+                or active_model_id
+                or "the active model"
+            )
+            model_label = guidance_model or active_model_id or "the active model"
+            provider = detect_provider(guidance_model, runtime).value if guidance_model else "unknown"
             channel = describe_provider_channel(runtime, provider)
             guidance = describe_fallback_guidance(
                 runtime,
                 provider_name=provider,
-                current_model=model_label or str(runtime.get("model", "")).strip(),
+                current_model=guidance_model,
             )
             guidance_suffix = f" Next step: {guidance[0]}" if guidance else ""
             return (
@@ -492,6 +495,67 @@ def _should_treat_assistant_as_progress(*, kind: str | None, content: str, saw_t
     return False
 
 
+# ── Preemptive context guard (Claude Code-style blocking limit) ─────────────
+
+def _is_at_blocking_limit(
+    token_count: int,
+    context_window: int,
+    *,
+    effective_window_ratio: float = 0.90,
+    min_reserve_tokens: int = 3_000,
+) -> bool:
+    """Preemptively block API calls when context is nearly full.
+
+    Inspired by Claude Code's `isAtBlockingLimit` — prevents 413 errors
+    by refusing to send a request when the context window is too full.
+
+    The effective window is model context_window * effective_window_ratio,
+    minus min_reserve_tokens (reserved for the assistant response).
+
+    Returns True if the request would likely trigger a 413.
+    """
+    effective_window = int(context_window * effective_window_ratio)
+    blocking_limit = max(1, effective_window - min_reserve_tokens)
+    return token_count >= blocking_limit
+
+
+def _compute_effective_blocking_limit(
+    context_window: int,
+    *,
+    effective_window_ratio: float = 0.90,
+    min_reserve_tokens: int = 3_000,
+) -> int:
+    effective_window = int(context_window * effective_window_ratio)
+    return max(1, effective_window - min_reserve_tokens)
+
+
+def _try_compact_with_breaker(
+    breaker: CompactionCircuitBreaker,
+    compact_fn: Callable[[], tuple[list, bool]],
+    current_messages: list,
+    logger_fn: Callable[..., None],
+) -> tuple[list, bool]:
+    """Run compaction through the circuit breaker.
+
+    Returns (messages, effective) — messages is the (possibly compacted)
+    list, effective indicates whether compaction actually changed anything.
+    """
+    if not breaker.is_allowed():
+        logger_fn("Compaction blocked by circuit breaker (consecutive failures)")
+        return current_messages, False
+    try:
+        result_messages, effective = compact_fn()
+        if effective:
+            breaker.record_success()
+        return result_messages, effective
+    except Exception as exc:
+        breaker.record_failure()
+        bs = breaker.get_state()
+        logger_fn("Compaction failed (breaker=%d/%d): %s",
+                  bs.consecutive_failures, breaker.config.failure_threshold, exc)
+        return current_messages, False
+
+
 def _model_next(
     model: ModelAdapter,
     messages: list[ChatMessage],
@@ -685,6 +749,14 @@ def run_agent_turn(
 ) -> list[ChatMessage]:
     # Prelude: prepare per-turn state before we enter the recurrent think/act loop.
     current_messages = list(messages)
+    runtime = runtime or {}
+    configured_runtime_model = (
+        str(runtime.get("configuredModel", "")).strip()
+        or str(runtime.get("model", "")).strip()
+        or str(getattr(model, "model_id", "") or "").strip()
+    )
+    if configured_runtime_model:
+        runtime.setdefault("configuredModel", configured_runtime_model)
     runtime_profile = resolve_runtime_profile(runtime, fallback_max_steps=max_steps)
     turn_state = TurnRecurrentState(
         max_steps=runtime_profile.max_steps,
@@ -982,6 +1054,11 @@ def run_agent_turn(
             )
         logger.info("Self-healing engine initialized: automated recovery + compaction delegation")
 
+        # ── Micro-compaction + circuit breaker (CC-style layered defense) ─────
+        micro_compactor = MicroCompactor()
+        compaction_breaker = CompactionCircuitBreaker()
+        logger.info("Micro-compactor + circuit breaker initialized for layered context defense")
+
         # 初始化成本控制闭环 (CostTracker → PID → ToolResultBudgetManager)
         cost_control = orch.cost_control if orch else None
         if cost_control is None:
@@ -1001,6 +1078,17 @@ def run_agent_turn(
         logger.info("Context: %d tokens (%.0f%%), %d messages",
                    stats.total_tokens, stats.usage_percentage, stats.messages_count)
 
+        # ── Layer 1: Micro-compaction (lightest defense) ───────────────────
+        current_messages, mc_stats = micro_compactor.compact(current_messages)
+        if mc_stats.reason != "no_action":
+            context_manager.messages = current_messages
+            logger.info(
+                "MicroCompact: %s — %d → %d messages",
+                mc_stats.reason,
+                mc_stats.messages_before,
+                mc_stats.messages_after,
+            )
+
         # 运行控制论闭环优化管线 (Sense → Predict → Control → Act → Learn)
         if context_cybernetics:
             if cost_control:
@@ -1018,39 +1106,65 @@ def run_agent_turn(
                         adj.budget_multiplier, adj.reason,
                     )
 
-            cyber_messages, cyber_result, cyber_action = context_cybernetics.run_cycle(
-                current_messages,
-                error_rate=float(turn_state.tool_error_count) / max(turn_state.step, 1) if turn_state.step > 0 else 0.0,
-                avg_latency=turn_state.step * 2.0,
-                turn_id=turn_state.step,
-            )
-            if cyber_result and cyber_result.effective:
-                current_messages = cyber_messages
-                context_manager.messages = current_messages
-                logger.info(
-                    "Cybernetics[%s]: %s intensity=%.2f freed=%d tokens [%s]",
-                    cyber_action.reason if cyber_action else "unknown",
-                    cyber_result.strategy.value,
-                    cyber_action.compaction_intensity if cyber_action else 0,
-                    cyber_result.tokens_freed,
-                    cyber_result.summary_text[:80] if cyber_result.summary_text else "",
-                )
+            if compaction_breaker.is_allowed():
+                try:
+                    cyber_messages, cyber_result, cyber_action = context_cybernetics.run_cycle(
+                        current_messages,
+                        error_rate=float(turn_state.tool_error_count) / max(turn_state.step, 1) if turn_state.step > 0 else 0.0,
+                        avg_latency=turn_state.step * 2.0,
+                        turn_id=turn_state.step,
+                    )
+                except Exception as exc:
+                    compaction_breaker.record_failure()
+                    logger.warning("Cybernetics compaction raised: %s", exc)
+                    cyber_result = None
+                if cyber_result and cyber_result.effective:
+                    compaction_breaker.record_success()
+                    current_messages = cyber_messages
+                    context_manager.messages = current_messages
+                    logger.info(
+                        "Cybernetics[%s]: %s intensity=%.2f freed=%d tokens [%s]",
+                        cyber_action.reason if cyber_action else "unknown",
+                        cyber_result.strategy.value,
+                        cyber_action.compaction_intensity if cyber_action else 0,
+                        cyber_result.tokens_freed,
+                        cyber_result.summary_text[:80] if cyber_result.summary_text else "",
+                    )
+            else:
+                logger.warning("Cybernetics compaction blocked by circuit breaker")
         elif context_compactor:
-            compaction_result = context_compactor.process_request(current_messages)
-            if compaction_result.effective:
-                current_messages = compaction_result.messages
-                context_manager.messages = current_messages
-                logger.info(
-                    "ContextCompactor: %s freed %d tokens [%s]",
-                    compaction_result.strategy.value,
-                    compaction_result.tokens_freed,
-                    compaction_result.summary_text[:80],
-                )
+            if compaction_breaker.is_allowed():
+                try:
+                    compaction_result = context_compactor.process_request(current_messages)
+                except Exception as exc:
+                    compaction_breaker.record_failure()
+                    logger.warning("Compactor raised: %s", exc)
+                    compaction_result = None
+                if compaction_result and compaction_result.effective:
+                    compaction_breaker.record_success()
+                    current_messages = compaction_result.messages
+                    context_manager.messages = current_messages
+                    logger.info(
+                        "ContextCompactor: %s freed %d tokens [%s]",
+                        compaction_result.strategy.value,
+                        compaction_result.tokens_freed,
+                        compaction_result.summary_text[:80],
+                    )
+            else:
+                logger.warning("Compactor blocked by circuit breaker")
         elif context_manager.should_auto_compact():
-            logger.warning("Context near limit, auto-compacting...")
-            current_messages = context_manager.compact_messages()
-            if on_assistant_message:
-                on_assistant_message(context_manager.get_context_summary())
+            if compaction_breaker.is_allowed():
+                try:
+                    logger.warning("Context near limit, auto-compacting...")
+                    current_messages = context_manager.compact_messages()
+                    compaction_breaker.record_success()
+                except Exception as exc:
+                    compaction_breaker.record_failure()
+                    logger.warning("Auto-compact failed: %s", exc)
+                if on_assistant_message:
+                    on_assistant_message(context_manager.get_context_summary())
+            else:
+                logger.warning("Auto-compact blocked by circuit breaker")
 
     try:
         # Recurrent kernel: repeated think/act/observe iterations over one turn.
@@ -1070,8 +1184,14 @@ def run_agent_turn(
                 current_policy.should_compact_aggressively
                 and context_manager
                 and context_manager.should_auto_compact()
+                and compaction_breaker.is_allowed()
             ):
-                current_messages = context_manager.compact_messages()
+                try:
+                    current_messages = context_manager.compact_messages()
+                    compaction_breaker.record_success()
+                except Exception as exc:
+                    compaction_breaker.record_failure()
+                    logger.warning("Aggressive compaction failed: %s", exc)
                 emit_runtime_event(
                     category="compaction",
                     message="Compacted context for the current runtime phase.",
@@ -1199,6 +1319,31 @@ def run_agent_turn(
 
             next_step: AgentStep
             try:
+                # ── Layer 0: Preemptive context guard (CC-style blocking limit)
+                if context_manager:
+                    cm_stats = context_manager.get_stats()
+                    if _is_at_blocking_limit(
+                        cm_stats.total_tokens,
+                        context_manager.context_window,
+                    ):
+                        blocking_msg = (
+                            f"Context near limit ({cm_stats.total_tokens} / "
+                            f"{context_manager.context_window} tokens). "
+                            "Use /compact manually, or reduce task scope."
+                        )
+                        logger.warning("Preemptive guard: %s", blocking_msg)
+                        emit_runtime_event(
+                            category="stop",
+                            message=blocking_msg,
+                            stop_reason="blocked",
+                        )
+                        if on_assistant_message:
+                            on_assistant_message(blocking_msg)
+                        current_messages.append(
+                            {"role": "assistant", "content": blocking_msg}
+                        )
+                        return current_messages
+
                 next_step = _model_next(
                     model,
                     current_messages,
@@ -1848,11 +1993,6 @@ def run_agent_turn(
             tool_errors=turn_state.tool_error_count,
         )
         step = turn_state.step
-        tool_error_count = turn_state.tool_error_count
-        task = prelude.task
-        task_metadata = prelude.task_metadata
-        auditor = prelude.auditor
-
         if metrics_collector and metrics_collector._current_turn is not None:
             total_tokens = sum(
                 estimate_message_tokens(m) for m in current_messages
