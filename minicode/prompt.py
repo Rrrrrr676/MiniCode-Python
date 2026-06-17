@@ -200,7 +200,7 @@ def build_system_prompt_bundle(
     # MCP servers section
     mcp_servers = extras.get("mcpServers", [])
     if mcp_servers:
-        def _server_line(server: Any) -> str:
+        def _server_line(server) -> str:
             # Guard each entry so one malformed server (missing keys / non-dict)
             # can't crash the whole system-prompt build.
             if not isinstance(server, dict):
