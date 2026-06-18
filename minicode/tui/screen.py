@@ -128,14 +128,19 @@ def enter_alternate_screen() -> None:
         # Dumb terminals (e.g. 'linux' console, 'dumb', piped output)
         # don't support alternate screen or mouse tracking.
         return
-    sys.stdout.write(DISABLE_MOUSE_TRACKING + ENTER_ALT_SCREEN + ERASE_SCREEN_AND_HOME + ENABLE_MOUSE_TRACKING + ENABLE_BRACKETED_PASTE + ENABLE_FOCUS_TRACKING + ENABLE_SYNC_OUTPUT)
+    # Frames are assembled in memory and emitted with a single write. Keep
+    # synchronized-output mode disabled: leaving DEC mode 2026 enabled makes
+    # supporting terminals buffer every frame and display a blank screen.
+    sys.stdout.write(DISABLE_SYNC_OUTPUT + DISABLE_MOUSE_TRACKING + ENTER_ALT_SCREEN + ERASE_SCREEN_AND_HOME + ENABLE_MOUSE_TRACKING + ENABLE_BRACKETED_PASTE + ENABLE_FOCUS_TRACKING)
     sys.stdout.flush()
 
 
 def exit_alternate_screen() -> None:
     if _is_dumb_terminal():
         return
-    sys.stdout.write(DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN + DISABLE_BRACKETED_PASTE + ENABLE_SYNC_OUTPUT + DISABLE_FOCUS_TRACKING)
+    # Unblock terminals left in synchronized-output mode by an older process
+    # before restoring the main screen buffer.
+    sys.stdout.write(DISABLE_SYNC_OUTPUT + DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN + DISABLE_BRACKETED_PASTE + DISABLE_FOCUS_TRACKING)
     sys.stdout.flush()
 
 

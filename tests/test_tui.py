@@ -125,6 +125,27 @@ def test_is_dumb_terminal_true_for_explicitly_limited_terms(
         assert screen._is_dumb_terminal() is True, term
 
 
+def test_alternate_screen_never_leaves_synchronized_output_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A full-screen session must not leave DEC mode 2026 enabled."""
+    from minicode.tui import screen
+
+    writes: list[str] = []
+    monkeypatch.setattr(screen, "_is_dumb_terminal", lambda: False)
+    monkeypatch.setattr(screen.sys.stdout, "write", writes.append)
+    monkeypatch.setattr(screen.sys.stdout, "flush", lambda: None)
+
+    screen.enter_alternate_screen()
+    screen.exit_alternate_screen()
+
+    assert len(writes) == 2
+    assert all(write.startswith(screen.DISABLE_SYNC_OUTPUT) for write in writes)
+    assert screen.ENABLE_SYNC_OUTPUT not in "".join(writes)
+    assert screen.ENABLE_MOUSE_TRACKING in writes[0]
+    assert screen.DISABLE_MOUSE_TRACKING in writes[1]
+
+
 # ---------------------------------------------------------------------------
 # /collapse slash command (TS parity) — collapses expanded tool-output blocks
 # ---------------------------------------------------------------------------

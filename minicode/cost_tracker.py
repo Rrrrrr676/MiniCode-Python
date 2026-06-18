@@ -182,12 +182,13 @@ def calculate_cost(
         Cost in USD
     """
     pricing = MODEL_PRICING.get(model, MODEL_PRICING["default"])
-    return (
-        (input_tokens / _DECIMAL_1M) * pricing["input"]
-        + (output_tokens / _DECIMAL_1M) * pricing["output"]
-        + (cache_read_tokens / _DECIMAL_1M) * pricing["cache_read"]
-        + (cache_creation_tokens / _DECIMAL_1M) * pricing["cache_write"]
-    )
+    cost = (
+        Decimal(input_tokens) * Decimal(str(pricing["input"]))
+        + Decimal(output_tokens) * Decimal(str(pricing["output"]))
+        + Decimal(cache_read_tokens) * Decimal(str(pricing["cache_read"]))
+        + Decimal(cache_creation_tokens) * Decimal(str(pricing["cache_write"]))
+    ) / _DECIMAL_1M
+    return float(cost)
 
 
 # ---------------------------------------------------------------------------
