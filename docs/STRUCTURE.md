@@ -1,7 +1,6 @@
 # MiniCode Python — 包结构（STRUCTURE）
 
-> 规范实现：仓库根目录的 `minicode/` 包。本文按子系统列出当前真实结构与模块职责（以实际文件为准，2026-06-16 校对）。
-> 模块数：`minicode/` 顶层 80 · `tools/` 30 · `tui/` 19。
+> 规范实现：仓库根目录的 `minicode/` 包。本文按子系统列出当前真实结构与模块职责（以实际文件为准，2026-06-19 校对）。
 
 ---
 
@@ -17,6 +16,24 @@
 | `config.py` | 运行时配置加载（`~/.mini-code/settings.json`、`.env`、环境变量）。 |
 | `workspace.py` | 工作区路径解析（`resolve_tool_path`、cwd 边界）。 |
 | `state.py` | 应用状态 Store（busy/cost/context-usage 等状态机）。 |
+
+## Web 产品面
+
+Web 是可选产品面，核心 Runtime 不反向依赖 Web。Python 服务位于 `minicode/web/`，React 浏览器端位于仓库根目录 `web/`。
+
+| 模块 | 职责 |
+|---|---|
+| `web/app.py` | FastAPI 应用工厂、统一异常响应、生产静态资源挂载。 |
+| `web/api.py` | 会话、消息、取消、权限、Diff REST API 与 WebSocket 事件端点。 |
+| `web/events.py` | 稳定事件信封与事件类型。 |
+| `web/broker.py` | 线程安全序号分配、历史保留、断线重放与等待订阅。 |
+| `web/runner.py` | `run_agent_turn` callback 适配、单活跃 turn、终态、审批协调与会话保存。 |
+| `web/schemas.py` | Pydantic 请求/响应协议。 |
+| `web/security.py` | 浏览器序列化边界的 Secret 脱敏。 |
+| `web/diff.py` | 工作区内只读 Git Diff 与 untracked 文件统计。 |
+| `web/cli.py` | `minicode-web` 入口，固定监听 `127.0.0.1`。 |
+
+浏览器端按 `src/api/`、`src/features/`、`src/store/`、`src/styles/` 分层；React 只消费 REST/WebSocket 协议，不复制 Agent 决策。
 
 ## Agent 循环与编排
 
@@ -173,7 +190,7 @@
 
 - `tests/` — pytest 套件（含 `test_integration_rounds.py` 端到端、`test_ts_ported.py` TS 对齐、各子系统单测）。
 - `conftest.py` — pytest 共享夹具。
-- `pyproject.toml` — 包定义（`minicode-py`，入口 `minicode-py` / `minicode-headless`）。
+- `pyproject.toml` — 包定义（入口 `minicode-py` / `minicode-headless` / `minicode-web`，Web 为可选依赖）。
 - `.env.example` — 环境变量样例（含 `MINI_CODE_COMMAND_ENCODING`）。
 - `ts-src/` — TypeScript 原版（移植参考，保留）。
 - `py-src/experiments/` — 研究 harness（未跟踪，`test_sealed_mini_study` 使用）。

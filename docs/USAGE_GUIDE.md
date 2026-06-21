@@ -1,7 +1,7 @@
 # MiniCode Python - 使用指南
 
 > 版本: v0.2.0
-> 更新时间: 2026-04-05
+> 更新时间: 2026-06-19
 
 ---
 
@@ -61,6 +61,52 @@ tools on | skills on
 ```
 
 **输入你的问题**，然后按 Enter。Mock 模式下会模拟 AI 响应。
+
+---
+
+## 🌐 本地 Web 控制台
+
+### 安装与启动
+
+在仓库根目录执行：
+
+```bash
+python -m pip install -e '.[web]'
+cd web
+npm install
+npm run build
+cd ..
+minicode-web
+```
+
+浏览器访问 `http://127.0.0.1:8765`。可使用 `--port` 更换端口，使用 `--workspace` 指定单一工作区：
+
+```bash
+minicode-web --port 9000 --workspace /path/to/project
+```
+
+服务固定监听 `127.0.0.1`，不提供公网绑定参数。生产模式由 FastAPI 同源提供 `web/dist`；开发前端时先运行后端，再在另一终端执行：
+
+```bash
+cd web
+npm run dev
+```
+
+### 页面与状态
+
+- 左栏创建或恢复当前工作区会话；
+- 中栏显示用户问题、流式回答、工具卡片、权限请求和显式错误；
+- 右栏显示只读 Changes 与折叠的 Activity；
+- WebSocket 断线会显示 `reconnecting`，按最后事件序号重放；
+- `failed` 是稳定终态，仅在开始新一轮时清除；
+- 写文件、危险命令和工作区外访问继续通过现有 `PermissionManager` 审批。
+
+### Web 测试
+
+```bash
+python -m pytest -q tests/test_web_api.py tests/test_web_events.py tests/test_web_runner.py
+cd web && npm run test && npm run build
+```
 
 ---
 

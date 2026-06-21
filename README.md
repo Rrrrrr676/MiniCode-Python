@@ -46,6 +46,18 @@ If you only remember one thing, remember this:
 
 > MiniCode Python is optimized for local trust: you should be able to inspect the work, recover the edits, and understand why the agent stopped.
 
+## Local Web Console
+
+Alongside TUI and Headless, MiniCode includes a loopback-only local Web console with session recovery, streaming answers, tool cards, explicit failures, permission approval, and a read-only workspace diff.
+
+```bash
+python -m pip install -e '.[web]'
+cd web && npm install && npm run build && cd ..
+minicode-web
+```
+
+Open `http://127.0.0.1:8765`. The server binds to `127.0.0.1` and does not serialize API keys, tokens, or complete environment variables to the browser. For frontend development, run `cd web && npm run dev`; Vite proxies `/api` to the local Web service.
+
 ## Why This Repo Exists
 
 Most coding-agent READMEs lead with model access and feature lists. MiniCode Python is organized around a different promise:

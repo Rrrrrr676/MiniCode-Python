@@ -39,6 +39,10 @@ env/
 .coverage
 htmlcov/
 
+# Browser frontend dependencies and build metadata
+node_modules/
+*.tsbuildinfo
+
 # OS
 .DS_Store
 Thumbs.db
