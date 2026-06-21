@@ -4,6 +4,7 @@ import type {
   ConversationMessage,
   FailurePayload,
   PermissionRequest,
+  TimelineItem,
   ToolActivity,
   TurnStatus,
   WebEvent,
@@ -14,11 +15,15 @@ export interface SessionViewState {
   workspace: string;
   status: TurnStatus;
   connection: ConnectionStatus;
+  retryAttempt: number;
+  nextRetryAt: number | null;
+  lastSyncedAt: string;
   maxSeq: number;
   messages: ConversationMessage[];
   streamText: string;
   tools: Record<string, ToolActivity>;
   toolOrder: string[];
+  timeline: TimelineItem[];
   permissions: Record<string, PermissionRequest>;
   activities: ActivityItem[];
   error: FailurePayload | null;
@@ -27,7 +32,7 @@ export interface SessionViewState {
 
 export type SessionAction =
   | { type: "event"; event: WebEvent }
-  | { type: "connection"; status: ConnectionStatus }
+  | { type: "connection"; status: ConnectionStatus; retryAttempt?: number; nextRetryAt?: number | null }
   | { type: "reset"; sessionId: string };
 
 export function initialSessionState(sessionId = ""): SessionViewState {
@@ -36,11 +41,15 @@ export function initialSessionState(sessionId = ""): SessionViewState {
     workspace: "",
     status: "idle",
     connection: "connecting",
+    retryAttempt: 0,
+    nextRetryAt: null,
+    lastSyncedAt: "",
     maxSeq: 0,
     messages: [],
     streamText: "",
     tools: {},
     toolOrder: [],
+    timeline: [],
     permissions: {},
     activities: [],
     error: null,
@@ -79,18 +88,53 @@ function permissionMap(raw: unknown): Record<string, PermissionRequest> {
   );
 }
 
+function activitiesFromSnapshot(raw: unknown, fallbackTimestamp: string): ActivityItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item, index) => {
+    if (!item || typeof item !== "object") return [];
+    const candidate = item as Record<string, unknown>;
+    if (typeof candidate.message !== "string") return [];
+    return [{
+      id: typeof candidate.id === "string" ? candidate.id : `activity-snapshot-${index}`,
+      category: typeof candidate.category === "string" ? candidate.category : "runtime",
+      message: candidate.message,
+      timestamp: typeof candidate.timestamp === "string" ? candidate.timestamp : fallbackTimestamp,
+      turnId: typeof candidate.turnId === "string" ? candidate.turnId : undefined,
+    }];
+  });
+}
+
 function toolsFromSnapshot(raw: unknown): {
   tools: Record<string, ToolActivity>;
   toolOrder: string[];
+  timeline: TimelineItem[];
+  messages: ConversationMessage[];
 } {
-  if (!Array.isArray(raw)) return { tools: {}, toolOrder: [] };
+  if (!Array.isArray(raw)) return { tools: {}, toolOrder: [], timeline: [], messages: [] };
   const tools: Record<string, ToolActivity> = {};
   const toolOrder: string[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
+  const timeline: TimelineItem[] = [];
+  const messages: ConversationMessage[] = [];
+  raw.forEach((item, index) => {
+    if (!item || typeof item !== "object") return;
     const message = item as Record<string, unknown>;
+    const seq = index + 1;
+    const turnId = typeof message.turnId === "string" ? message.turnId : "snapshot";
+    if ((message.role === "user" || message.role === "assistant") && typeof message.content === "string") {
+      const id = `snapshot-${index}`;
+      const restoredMessage: ConversationMessage = {
+        id,
+        role: message.role,
+        content: message.content,
+        turnId,
+        seq,
+      };
+      messages.push(restoredMessage);
+      timeline.push({ id, kind: "message", role: message.role, content: message.content, seq, turnId });
+      return;
+    }
     const toolId = typeof message.toolUseId === "string" ? message.toolUseId : "";
-    if (!toolId) continue;
+    if (!toolId) return;
     if (message.role === "assistant_tool_call") {
       tools[toolId] = {
         toolId,
@@ -99,8 +143,13 @@ function toolsFromSnapshot(raw: unknown): {
         inputSummary: JSON.stringify(message.input ?? {}),
         outputSummary: "",
         durationMs: null,
+        turnId,
+        startedSeq: seq,
       };
       if (!toolOrder.includes(toolId)) toolOrder.push(toolId);
+      if (!timeline.some((item) => item.kind === "tool" && item.toolId === toolId)) {
+        timeline.push({ id: `tool-${toolId}`, kind: "tool", toolId, seq, turnId });
+      }
     }
     if (message.role === "tool_result") {
       const previous = tools[toolId];
@@ -111,63 +160,162 @@ function toolsFromSnapshot(raw: unknown): {
         inputSummary: previous?.inputSummary ?? "",
         outputSummary: typeof message.content === "string" ? message.content : "",
         durationMs: null,
+        turnId: previous?.turnId ?? turnId,
+        startedSeq: previous?.startedSeq ?? seq,
       };
       if (!toolOrder.includes(toolId)) toolOrder.push(toolId);
+      if (!timeline.some((item) => item.kind === "tool" && item.toolId === toolId)) {
+        timeline.push({ id: `tool-${toolId}`, kind: "tool", toolId, seq, turnId });
+      }
     }
+  });
+  return { tools, toolOrder, timeline, messages };
+}
+
+function upsertToolTimeline(
+  timeline: TimelineItem[],
+  toolId: string,
+  event: WebEvent,
+): TimelineItem[] {
+  if (!toolId || timeline.some((item) => item.kind === "tool" && item.toolId === toolId)) return timeline;
+  return [...timeline, { id: `tool-${toolId}`, kind: "tool", toolId, seq: event.seq, turnId: event.turnId }];
+}
+
+function withStreamingMessage(
+  timeline: TimelineItem[],
+  event: WebEvent,
+  content: string,
+  done = false,
+): TimelineItem[] {
+  const streamId = `assistant-stream-${event.turnId || event.sessionId}`;
+  const existing = timeline.find((item) => item.kind === "message" && item.id === streamId);
+  if (!existing) {
+    return [
+      ...timeline,
+      {
+        id: done ? `assistant-${event.seq}` : streamId,
+        kind: "message",
+        role: "assistant",
+        content,
+        seq: event.seq,
+        turnId: event.turnId,
+        streaming: !done,
+      },
+    ];
   }
-  return { tools, toolOrder };
+  return timeline.map((item) => (
+    item.kind === "message" && item.id === streamId
+      ? { ...item, id: done ? `assistant-${event.seq}` : item.id, content, streaming: !done }
+      : item
+  ));
 }
 
 export function sessionReducer(state: SessionViewState, action: SessionAction): SessionViewState {
   if (action.type === "reset") return initialSessionState(action.sessionId);
-  if (action.type === "connection") return { ...state, connection: action.status };
+  if (action.type === "connection") {
+    return {
+      ...state,
+      connection: action.status,
+      retryAttempt: action.retryAttempt ?? (action.status === "connected" ? 0 : state.retryAttempt),
+      nextRetryAt: action.nextRetryAt ?? (action.status === "connected" ? null : state.nextRetryAt),
+    };
+  }
 
   const event = action.event;
   if (event.seq <= state.maxSeq) return state;
-  const base = { ...state, maxSeq: event.seq };
+  const base = { ...state, maxSeq: event.seq, lastSyncedAt: event.timestamp };
 
   switch (event.type) {
     case "session.snapshot": {
       const snapshotStatus = text(event.payload, "status") as TurnStatus;
       const snapshotError = event.payload.error as FailurePayload | null | undefined;
       const restoredTools = toolsFromSnapshot(event.payload.messages);
+      const restoredPermissions = permissionMap(event.payload.pendingPermissions);
+      // Pending prompts and failures are not persisted as conversation messages, so
+      // rebuild their timeline entries after replaying the stored message sequence.
+      const restoredTimeline = [...restoredTools.timeline];
+      const snapshotTailSeq = restoredTimeline.length;
+      Object.values(restoredPermissions).forEach((request, index) => {
+        restoredTimeline.push({
+          id: `permission-${request.requestId}`,
+          kind: "permission",
+          requestId: request.requestId,
+          seq: snapshotTailSeq + index + 1,
+          turnId: request.turnId ?? event.turnId,
+        });
+      });
+      if (snapshotError) {
+        restoredTimeline.push({
+          id: `error-snapshot-${restoredTimeline.length + 1}`,
+          kind: "error",
+          traceId: snapshotError.traceId,
+          seq: restoredTimeline.length + 1,
+          turnId: event.turnId,
+        });
+      }
       return {
         ...base,
         sessionId: text(event.payload, "sessionId") || event.sessionId,
         workspace: text(event.payload, "workspace"),
         status: snapshotStatus || "idle",
-        messages: messagesFromSnapshot(event.payload.messages),
+        messages: restoredTools.messages.length ? restoredTools.messages : messagesFromSnapshot(event.payload.messages),
         streamText: "",
         tools: restoredTools.tools,
         toolOrder: restoredTools.toolOrder,
-        permissions: permissionMap(event.payload.pendingPermissions),
+        timeline: restoredTimeline,
+        activities: activitiesFromSnapshot(event.payload.activities, event.timestamp),
+        permissions: restoredPermissions,
         error: snapshotError ?? null,
       };
     }
     case "turn.started": {
       const content = text(event.payload, "message");
       const last = base.messages.at(-1);
+      const shouldAppend = content && !(last?.role === "user" && last.content === content);
+      const userMessage: ConversationMessage = {
+        id: `user-${event.seq}`,
+        role: "user",
+        content,
+        turnId: event.turnId,
+        seq: event.seq,
+      };
       return {
         ...base,
         status: "running",
         error: null,
         streamText: "",
-        messages:
-          content && !(last?.role === "user" && last.content === content)
-            ? [...base.messages, { id: `user-${event.seq}`, role: "user", content }]
-            : base.messages,
+        messages: shouldAppend ? [...base.messages, userMessage] : base.messages,
+        timeline: shouldAppend
+          ? [...base.timeline, { ...userMessage, kind: "message", seq: event.seq, turnId: event.turnId }]
+          : base.timeline,
       };
     }
     case "assistant.delta":
-      return { ...base, streamText: base.streamText + text(event.payload, "content") };
+      return {
+        ...base,
+        streamText: base.streamText + text(event.payload, "content"),
+        timeline: withStreamingMessage(
+          base.timeline,
+          event,
+          base.streamText + text(event.payload, "content"),
+        ),
+      };
     case "assistant.completed": {
       const content = text(event.payload, "content") || base.streamText;
+      const assistantMessage: ConversationMessage = {
+        id: `assistant-${event.seq}`,
+        role: "assistant",
+        content,
+        turnId: event.turnId,
+        seq: event.seq,
+      };
       return {
         ...base,
         streamText: "",
         messages: content
-          ? [...base.messages, { id: `assistant-${event.seq}`, role: "assistant", content }]
+          ? [...base.messages, assistantMessage]
           : base.messages,
+        timeline: content ? withStreamingMessage(base.timeline, event, content, true) : base.timeline,
       };
     }
     case "tool.started": {
@@ -179,11 +327,14 @@ export function sessionReducer(state: SessionViewState, action: SessionAction): 
         inputSummary: text(event.payload, "inputSummary"),
         outputSummary: "",
         durationMs: null,
+        turnId: event.turnId,
+        startedSeq: event.seq,
       };
       return {
         ...base,
         tools: { ...base.tools, [toolId]: tool },
         toolOrder: base.toolOrder.includes(toolId) ? base.toolOrder : [...base.toolOrder, toolId],
+        timeline: upsertToolTimeline(base.timeline, toolId, event),
       };
     }
     case "tool.completed": {
@@ -200,9 +351,12 @@ export function sessionReducer(state: SessionViewState, action: SessionAction): 
             inputSummary: previous?.inputSummary ?? "",
             outputSummary: text(event.payload, "outputSummary"),
             durationMs: number(event.payload, "durationMs"),
+            turnId: previous?.turnId ?? event.turnId,
+            startedSeq: previous?.startedSeq ?? event.seq,
           },
         },
         toolOrder: base.toolOrder.includes(toolId) ? base.toolOrder : [...base.toolOrder, toolId],
+        timeline: upsertToolTimeline(base.timeline, toolId, event),
       };
     }
     case "runtime.phase": {
@@ -211,15 +365,20 @@ export function sessionReducer(state: SessionViewState, action: SessionAction): 
         category: text(event.payload, "category") || "runtime",
         message: text(event.payload, "message"),
         timestamp: event.timestamp,
+        turnId: event.turnId,
       };
       return { ...base, activities: [...base.activities, item].slice(-100) };
     }
     case "permission.requested": {
-      const request = event.payload as unknown as PermissionRequest;
+      const request = { ...(event.payload as unknown as PermissionRequest), turnId: event.turnId };
       return {
         ...base,
         status: "waiting_permission",
         permissions: { ...base.permissions, [request.requestId]: request },
+        timeline: [
+          ...base.timeline,
+          { id: `permission-${request.requestId}`, kind: "permission", requestId: request.requestId, seq: event.seq, turnId: event.turnId },
+        ],
       };
     }
     case "permission.resolved": {
@@ -229,7 +388,21 @@ export function sessionReducer(state: SessionViewState, action: SessionAction): 
       return { ...base, status: "running", permissions };
     }
     case "turn.failed":
-      return { ...base, status: "failed", error: event.payload as unknown as FailurePayload };
+      return {
+        ...base,
+        status: "failed",
+        error: event.payload as unknown as FailurePayload,
+        timeline: [
+          ...base.timeline,
+          {
+            id: `error-${text(event.payload, "traceId") || event.seq}`,
+            kind: "error",
+            traceId: text(event.payload, "traceId"),
+            seq: event.seq,
+            turnId: event.turnId,
+          },
+        ],
+      };
     case "turn.completed":
       return { ...base, status: "completed" };
     case "turn.cancelled":

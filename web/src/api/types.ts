@@ -21,6 +21,8 @@ export interface ConversationMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  turnId?: string;
+  seq?: number;
 }
 
 export interface PermissionRequest {
@@ -29,8 +31,19 @@ export interface PermissionRequest {
   summary: string;
   details: string[];
   scope: string;
+  choices?: PermissionDecision[];
   createdAt: number;
+  turnId?: string;
 }
+
+export type PermissionDecision =
+  | "allow_once"
+  | "allow_always"
+  | "allow_turn"
+  | "allow_all_turn"
+  | "deny_once"
+  | "deny_always"
+  | "deny_with_feedback";
 
 export interface SessionSnapshot {
   sessionId: string;
@@ -39,6 +52,7 @@ export interface SessionSnapshot {
   activeTurnId: string;
   lastSeq: number;
   messages: Array<Record<string, unknown>>;
+  activities: ActivityItem[];
   pendingPermissions: PermissionRequest[];
   error: FailurePayload | null;
 }
@@ -56,6 +70,8 @@ export interface ToolActivity {
   inputSummary: string;
   outputSummary: string;
   durationMs: number | null;
+  turnId?: string;
+  startedSeq?: number;
 }
 
 export interface ActivityItem {
@@ -63,13 +79,36 @@ export interface ActivityItem {
   category: string;
   message: string;
   timestamp: string;
+  turnId?: string;
+}
+
+export type TimelineItem =
+  | {
+      id: string;
+      kind: "message";
+      role: "user" | "assistant";
+      content: string;
+      seq: number;
+      turnId: string;
+      streaming?: boolean;
+    }
+  | { id: string; kind: "tool"; toolId: string; seq: number; turnId: string }
+  | { id: string; kind: "permission"; requestId: string; seq: number; turnId: string }
+  | { id: string; kind: "error"; traceId: string; seq: number; turnId: string };
+
+export interface ConnectionState {
+  status: ConnectionStatus;
+  retryAttempt?: number;
+  nextRetryAt?: number;
+  lastSyncedAt?: string;
 }
 
 export interface DiffFile {
   path: string;
   additions: number;
   deletions: number;
-  patch: string;
+  status: "added" | "copied" | "deleted" | "modified" | "renamed" | "untracked" | string;
+  isBinary: boolean;
 }
 
 export interface DiffResponse {
@@ -77,6 +116,13 @@ export interface DiffResponse {
   additions: number;
   deletions: number;
   truncated: boolean;
+  revision: string;
+}
+
+export interface DiffPatchResponse extends DiffFile {
+  patch: string;
+  truncated: boolean;
+  revision: string;
 }
 
 export type WebEventType =

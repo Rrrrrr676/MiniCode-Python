@@ -49,6 +49,7 @@ class SessionSnapshot(BaseModel):
     activeTurnId: str = ""
     lastSeq: int = 0
     messages: list[dict[str, Any]] = Field(default_factory=list)
+    activities: list[dict[str, Any]] = Field(default_factory=list)
     pendingPermissions: list[dict[str, Any]] = Field(default_factory=list)
     error: dict[str, Any] | None = None
 
@@ -57,7 +58,8 @@ class DiffFile(BaseModel):
     path: str
     additions: int
     deletions: int
-    patch: str
+    status: str = "modified"
+    isBinary: bool = False
 
 
 class DiffResponse(BaseModel):
@@ -65,6 +67,18 @@ class DiffResponse(BaseModel):
     additions: int
     deletions: int
     truncated: bool = False
+    revision: str = ""
+
+
+class DiffPatchResponse(BaseModel):
+    path: str
+    patch: str
+    additions: int
+    deletions: int
+    status: str = "modified"
+    isBinary: bool = False
+    truncated: bool = False
+    revision: str = ""
 
 
 class ErrorDetail(BaseModel):

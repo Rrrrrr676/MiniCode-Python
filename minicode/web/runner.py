@@ -195,6 +195,21 @@ class WebSessionRunner:
         )
 
     def _snapshot_payload(self, state: WebSessionState) -> dict[str, Any]:
+        activity_events = [
+            event
+            for event in self.broker.replay(state.session.session_id)
+            if event.type == "runtime.phase"
+        ][-100:]
+        activities = [
+            {
+                "id": f"activity-{event.seq}",
+                "category": event.payload.get("category", "runtime"),
+                "message": event.payload.get("message", ""),
+                "timestamp": event.timestamp,
+                "turnId": event.turn_id,
+            }
+            for event in activity_events
+        ]
         with self._lock:
             pending = [
                 self._permission_payload(request)
@@ -207,6 +222,7 @@ class WebSessionRunner:
                 "status": state.status,
                 "activeTurnId": state.active_turn_id,
                 "messages": sanitize_for_web(state.session.messages),
+                "activities": activities,
                 "pendingPermissions": pending,
                 "error": sanitize_for_web(state.last_error),
             }

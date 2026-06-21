@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 import minicode.session as session_module
 from minicode.web.app import create_app
-from minicode.web.diff import read_workspace_diff
+from minicode.web.diff import read_workspace_diff, read_workspace_diff_file
 from minicode.web.runner import WebSessionRunner
 from minicode.web.security import sanitize_for_web
 
@@ -123,3 +123,66 @@ def test_workspace_diff_includes_tracked_and_untracked_files(tmp_path: Path) -> 
 
     assert paths == {"tracked.txt", "new.txt"}
     assert diff.additions >= 2
+    assert all(not hasattr(item, "patch") for item in diff.files)
+    assert diff.revision
+
+    tracked_patch = read_workspace_diff_file(tmp_path, "tracked.txt")
+    assert "two" in tracked_patch.patch
+    assert tracked_patch.revision == diff.revision
+
+    untracked_patch = read_workspace_diff_file(tmp_path, "new.txt")
+    assert "new" in untracked_patch.patch
+
+
+def test_workspace_diff_rejects_paths_outside_workspace(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    with pytest.raises(ValueError):
+        read_workspace_diff_file(tmp_path, "../outside.txt")
+    with pytest.raises(ValueError):
+        read_workspace_diff_file(tmp_path, str((tmp_path / "absolute.txt").resolve()))
+
+
+def test_workspace_diff_truncates_text_and_handles_binary_and_symlink(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "large.txt").write_text("line\n" * 1_000, encoding="utf-8")
+    (tmp_path / "binary.dat").write_bytes(b"before\0after")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    (tmp_path / "escape.txt").symlink_to(outside)
+
+    summary = read_workspace_diff(tmp_path)
+    by_path = {item.path: item for item in summary.files}
+    assert by_path["binary.dat"].isBinary is True
+    assert "escape.txt" not in by_path
+
+    large_patch = read_workspace_diff_file(tmp_path, "large.txt", max_bytes=64)
+    assert large_patch.truncated is True
+    assert large_patch.patch
+
+    binary_patch = read_workspace_diff_file(tmp_path, "binary.dat")
+    assert binary_patch.isBinary is True
+    assert binary_patch.patch == ""
+
+    with pytest.raises(ValueError):
+        read_workspace_diff_file(tmp_path, "escape.txt")
+
+
+def test_diff_api_returns_summary_and_lazy_patch(api_client, tmp_path: Path) -> None:
+    client, _runner = api_client
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "lazy.txt").write_text("lazy patch\n", encoding="utf-8")
+    session_id = client.post("/api/sessions", json={}).json()["sessionId"]
+
+    summary = client.get(f"/api/sessions/{session_id}/diff")
+    assert summary.status_code == 200
+    body = summary.json()
+    lazy_summary = next(item for item in body["files"] if item["path"] == "lazy.txt")
+    assert "patch" not in lazy_summary
+
+    patch = client.get(f"/api/sessions/{session_id}/diff/files/lazy.txt")
+    assert patch.status_code == 200
+    assert "lazy patch" in patch.json()["patch"]
+
+    escaped = client.get(f"/api/sessions/{session_id}/diff/files/%2E%2E%2Foutside.txt")
+    assert escaped.status_code == 400

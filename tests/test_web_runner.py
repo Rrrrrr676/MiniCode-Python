@@ -35,6 +35,7 @@ def _wait_for_terminal(runner: WebSessionRunner, session_id: str, timeout: float
 
 def test_runner_maps_callbacks_and_persists_completed_turn(isolated_sessions: Path) -> None:
     def execute(context):
+        context.callbacks.on_progress_message("Reading workspace")
         context.callbacks.on_tool_start("read_file", {"path": "README.md"})
         context.callbacks.on_tool_result("read_file", "contents", False)
         context.callbacks.on_stream_chunk("Hello")
@@ -51,6 +52,8 @@ def test_runner_maps_callbacks_and_persists_completed_turn(isolated_sessions: Pa
     assert "tool.completed" in [event.type for event in events]
     assert runner.snapshot(snapshot.sessionId).status == "completed"
     assert runner.snapshot(snapshot.sessionId).messages[-1]["content"] == "Hello from MiniCode"
+    assert runner.snapshot(snapshot.sessionId).activities[-1]["message"] == "Reading workspace"
+    assert runner.snapshot(snapshot.sessionId).activities[-1]["turnId"].startswith("turn-")
     runner.close()
 
 

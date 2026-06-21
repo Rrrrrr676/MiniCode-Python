@@ -18,7 +18,27 @@ describe("PermissionCard", () => {
     fireEvent.click(allow);
     fireEvent.click(allow);
     expect(onResolve).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: "Resolving…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Submitting..." })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Deny" })).toBeDisabled();
+  });
+
+  it("uses legal choices from the backend payload", () => {
+    const onResolve = vi.fn(() => Promise.resolve());
+    render(
+      <PermissionCard
+        request={{
+          requestId: "perm-1",
+          kind: "command",
+          summary: "Run command",
+          details: [],
+          scope: "turn",
+          choices: ["allow_turn", "deny_once"],
+          createdAt: 0,
+        }}
+        onResolve={onResolve}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Allow this turn" }));
+    expect(onResolve).toHaveBeenCalledWith("allow_turn");
   });
 });

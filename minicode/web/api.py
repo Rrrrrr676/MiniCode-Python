@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 
 from minicode.web import __version__
-from minicode.web.diff import read_workspace_diff
+from minicode.web.diff import MAX_EXPANDED_DIFF_BYTES, read_workspace_diff, read_workspace_diff_file
 from minicode.web.runner import (
     PermissionResolutionError,
     SessionNotFoundError,
@@ -19,6 +19,7 @@ from minicode.web.runner import (
 )
 from minicode.web.schemas import (
     CreateSessionRequest,
+    DiffPatchResponse,
     DiffResponse,
     MessageRequest,
     PermissionResolveRequest,
@@ -113,6 +114,35 @@ def create_api_router(runner: WebSessionRunner) -> APIRouter:
                 http_status=status.HTTP_404_NOT_FOUND,
             ) from exc
         return read_workspace_diff(runner.workspace)
+
+    @router.get("/sessions/{session_id}/diff/files/{encoded_path:path}", response_model=DiffPatchResponse)
+    def get_diff_file(
+        session_id: str,
+        encoded_path: str,
+        limit: int = Query(default=1_000_000, ge=1, le=MAX_EXPANDED_DIFF_BYTES),
+    ) -> DiffPatchResponse:
+        try:
+            runner.snapshot(session_id)
+        except SessionNotFoundError as exc:
+            raise _error(
+                "SESSION_NOT_FOUND",
+                "Session does not exist in the current workspace.",
+                http_status=status.HTTP_404_NOT_FOUND,
+            ) from exc
+        try:
+            return read_workspace_diff_file(runner.workspace, encoded_path, max_bytes=limit)
+        except FileNotFoundError as exc:
+            raise _error(
+                "DIFF_FILE_NOT_FOUND",
+                "The requested file is not part of the current workspace diff.",
+                http_status=status.HTTP_404_NOT_FOUND,
+            ) from exc
+        except ValueError as exc:
+            raise _error(
+                "DIFF_PATH_INVALID",
+                str(exc),
+                http_status=status.HTTP_400_BAD_REQUEST,
+            ) from exc
 
     @router.post("/permissions/{request_id}/resolve")
     def resolve_permission(

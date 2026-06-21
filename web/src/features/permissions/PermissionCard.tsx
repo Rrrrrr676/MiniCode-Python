@@ -1,21 +1,34 @@
 import { useState } from "react";
-import type { PermissionRequest } from "../../api/types";
+import type { PermissionDecision, PermissionRequest } from "../../api/types";
 
 interface PermissionCardProps {
   request: PermissionRequest;
-  onResolve: (decision: "allow_once" | "deny_once") => Promise<void>;
+  onResolve: (decision: PermissionDecision) => Promise<void>;
 }
 
-export function PermissionCard({ request, onResolve }: PermissionCardProps) {
-  const [isSubmitting, setIsSubmitting] = useState(false);
+const FALLBACK_CHOICES: PermissionDecision[] = ["deny_once", "allow_once"];
 
-  async function resolve(decision: "allow_once" | "deny_once") {
-    if (isSubmitting) return;
-    setIsSubmitting(true);
+const CHOICE_LABELS: Record<PermissionDecision, string> = {
+  allow_once: "Allow once",
+  allow_always: "Always allow",
+  allow_turn: "Allow this turn",
+  allow_all_turn: "Allow all turns",
+  deny_once: "Deny",
+  deny_always: "Always deny",
+  deny_with_feedback: "Deny with feedback",
+};
+
+export function PermissionCard({ request, onResolve }: PermissionCardProps) {
+  const [submittingDecision, setSubmittingDecision] = useState<PermissionDecision | null>(null);
+  const choices = request.choices?.length ? request.choices : FALLBACK_CHOICES;
+
+  async function resolve(decision: PermissionDecision) {
+    if (submittingDecision) return;
+    setSubmittingDecision(decision);
     try {
       await onResolve(decision);
     } catch {
-      setIsSubmitting(false);
+      setSubmittingDecision(null);
     }
   }
 
@@ -29,10 +42,16 @@ export function PermissionCard({ request, onResolve }: PermissionCardProps) {
         <pre>{request.details.join("\n")}</pre>
       </details>
       <div className="permission-actions">
-        <button disabled={isSubmitting} onClick={() => void resolve("deny_once")}>Deny</button>
-        <button className="primary" disabled={isSubmitting} onClick={() => void resolve("allow_once")}>
-          {isSubmitting ? "Resolving…" : "Allow once"}
-        </button>
+        {choices.map((choice) => (
+          <button
+            key={choice}
+            className={choice.startsWith("allow") ? "primary" : undefined}
+            disabled={submittingDecision !== null}
+            onClick={() => void resolve(choice)}
+          >
+            {submittingDecision === choice ? "Submitting..." : CHOICE_LABELS[choice] ?? choice}
+          </button>
+        ))}
       </div>
     </section>
   );

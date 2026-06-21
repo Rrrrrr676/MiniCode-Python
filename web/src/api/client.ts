@@ -1,5 +1,7 @@
 import type {
+  DiffPatchResponse,
   DiffResponse,
+  PermissionDecision,
   SessionSnapshot,
   SessionSummary,
   WebEvent,
@@ -39,13 +41,19 @@ export const api = {
     request<{ accepted: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/cancel`, {
       method: "POST",
     }),
-  resolvePermission: (requestId: string, decision: string) =>
+  resolvePermission: (requestId: string, decision: PermissionDecision) =>
     request<{ resolved: boolean }>(`/api/permissions/${encodeURIComponent(requestId)}/resolve`, {
       method: "POST",
       body: JSON.stringify({ decision, feedback: "" }),
     }),
   getDiff: (sessionId: string) =>
     request<DiffResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/diff`),
+  getDiffFile: (sessionId: string, path: string, limit?: number) => {
+    const query = limit ? `?limit=${encodeURIComponent(String(limit))}` : "";
+    return request<DiffPatchResponse>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/diff/files/${encodeURIComponent(path)}${query}`,
+    );
+  },
 };
 
 export function connectSessionEvents(
