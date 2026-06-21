@@ -3,6 +3,7 @@ export type TurnStatus =
   | "running"
   | "waiting_permission"
   | "failed"
+  | "incomplete"
   | "completed"
   | "cancelled";
 
@@ -55,6 +56,14 @@ export interface SessionSnapshot {
   activities: ActivityItem[];
   pendingPermissions: PermissionRequest[];
   error: FailurePayload | null;
+  terminal?: TerminalPayload | null;
+}
+
+export interface TerminalPayload {
+  reason: "max_tool_steps";
+  usedSteps: number;
+  maxSteps: number;
+  message: string;
 }
 
 export interface FailurePayload {
@@ -94,7 +103,8 @@ export type TimelineItem =
     }
   | { id: string; kind: "tool"; toolId: string; seq: number; turnId: string }
   | { id: string; kind: "permission"; requestId: string; seq: number; turnId: string }
-  | { id: string; kind: "error"; traceId: string; seq: number; turnId: string };
+  | { id: string; kind: "error"; traceId: string; seq: number; turnId: string }
+  | { id: string; kind: "incomplete"; reason: "max_tool_steps"; seq: number; turnId: string };
 
 export interface ConnectionState {
   status: ConnectionStatus;
@@ -137,6 +147,7 @@ export type WebEventType =
   | "permission.resolved"
   | "diff.updated"
   | "turn.failed"
+  | "turn.incomplete"
   | "turn.completed"
   | "turn.cancelled";
 

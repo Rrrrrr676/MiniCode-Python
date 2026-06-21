@@ -3,6 +3,7 @@ import {
   KeyboardEvent,
   useCallback,
   useEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -12,15 +13,17 @@ import type {
   DiffResponse,
   SessionSnapshot,
   SessionSummary,
-  TimelineItem,
   WebEvent,
 } from "./api/types";
 import { ChangesPanel } from "./features/changes/ChangesPanel";
 import { ErrorCard } from "./features/chat/ErrorCard";
 import { MarkdownMessage } from "./features/chat/MarkdownMessage";
+import { MaxToolStepsCard } from "./features/chat/MaxToolStepsCard";
 import { useTranscriptScroll } from "./features/chat/useTranscriptScroll";
 import { PermissionCard } from "./features/permissions/PermissionCard";
 import { ToolCard } from "./features/tools/ToolCard";
+import { ToolGroup } from "./features/tools/ToolGroup";
+import { groupTimelineTools, type PresentationalTimelineItem } from "./features/tools/toolGrouping";
 import { initialSessionState, sessionReducer } from "./store/sessionStore";
 
 const STATUS_LABELS = {
@@ -28,6 +31,7 @@ const STATUS_LABELS = {
   running: "Working",
   waiting_permission: "Needs approval",
   failed: "Failed",
+  incomplete: "Incomplete",
   completed: "Completed",
   cancelled: "Cancelled",
 } as const;
@@ -97,8 +101,12 @@ export function App() {
 
   const isActive = state.status === "running" || state.status === "waiting_permission";
   const permissions = Object.values(state.permissions);
-  const transcriptVersion = `${state.maxSeq}:${state.timeline.length}:${state.streamText.length}:${permissions.length}:${state.error?.traceId ?? ""}`;
+  const transcriptVersion = `${state.maxSeq}:${state.timeline.length}:${state.streamText.length}:${permissions.length}:${state.error?.traceId ?? ""}:${state.terminal?.reason ?? ""}`;
   const { isFollowing, unreadCount, followLatest } = useTranscriptScroll(transcriptRef, transcriptVersion);
+  const presentationalTimeline = useMemo(
+    () => groupTimelineTools(state.timeline, state.tools),
+    [state.timeline, state.tools],
+  );
 
   useEffect(() => {
     maxSeqRef.current = state.maxSeq;
@@ -240,7 +248,7 @@ export function App() {
         onEvent: (event) => {
           maxSeqRef.current = Math.max(maxSeqRef.current, event.seq);
           dispatch({ type: "event", event });
-          if (["turn.completed", "turn.failed", "turn.cancelled"].includes(event.type)) {
+          if (["turn.completed", "turn.failed", "turn.incomplete", "turn.cancelled"].includes(event.type)) {
             void api.listSessions().then((items) => {
               if (active) setSessions(items);
             });
@@ -344,13 +352,13 @@ export function App() {
     }
   }
 
-  function renderTimelineItem(item: TimelineItem) {
+  function renderTimelineItem(item: PresentationalTimelineItem) {
     if (item.kind === "message") {
       return (
         <article className={`message message-${item.role} ${item.streaming ? "streaming" : ""}`}>
           <div className="message-label">{item.role === "user" ? "You" : item.streaming ? "MiniCode - writing" : "MiniCode"}</div>
           <div className="message-body">
-            <MarkdownMessage content={item.content} />
+            <MarkdownMessage content={item.content} idPrefix={item.id} />
             {item.streaming && <span className="cursor" />}
           </div>
         </article>
@@ -359,6 +367,10 @@ export function App() {
     if (item.kind === "tool") {
       const tool = state.tools[item.toolId];
       return tool ? <ToolCard tool={tool} /> : null;
+    }
+    if (item.kind === "tool-group") {
+      const tools = item.toolIds.flatMap((toolId) => state.tools[toolId] ? [state.tools[toolId]] : []);
+      return tools.length ? <ToolGroup tools={tools} /> : null;
     }
     if (item.kind === "permission") {
       const request = state.permissions[item.requestId];
@@ -377,6 +389,15 @@ export function App() {
           error={error}
           onDismiss={() => setDismissedErrors((errors) => ({ ...errors, [error.traceId]: true }))}
           onRetry={() => void retryLastUserMessage()}
+        />
+      );
+    }
+    if (item.kind === "incomplete" && state.terminal) {
+      return (
+        <MaxToolStepsCard
+          terminal={state.terminal}
+          disabled={isSending || isActive}
+          onContinue={() => void submitContent("Continue this task from the existing results. First summarize what is already known, then complete the remaining work without repeating finished tool calls.")}
         />
       );
     }
@@ -480,17 +501,20 @@ export function App() {
               <p>Ask about this repository, request a change, or investigate a failure. Tools and approvals stay visible as the agent works.</p>
             </div>
           )}
-          {state.timeline.map((item) => (
+          {presentationalTimeline.map((item) => (
             <div key={item.id} className={`timeline-item timeline-${item.kind}`}>
               {renderTimelineItem(item)}
             </div>
           ))}
+        </section>
+
+        <div className={`follow-latest-dock ${isFollowing ? "" : "visible"}`}>
           {!isFollowing && (
             <button type="button" className="follow-latest" onClick={() => followLatest()}>
-              Back to latest{unreadCount > 0 ? ` (${unreadCount})` : ""}
+              Back to latest{unreadCount > 0 ? ` · ${unreadCount}` : ""}
             </button>
           )}
-        </section>
+        </div>
 
         <footer className="composer-wrap">
           {notice && <div className="notice" role="status">{notice}<button aria-label="Dismiss" onClick={() => setNotice("")}>×</button></div>}

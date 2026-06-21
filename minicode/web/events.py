@@ -19,6 +19,7 @@ EventType = Literal[
     "permission.resolved",
     "diff.updated",
     "turn.failed",
+    "turn.incomplete",
     "turn.completed",
     "turn.cancelled",
 ]

@@ -112,4 +112,48 @@ describe("sessionReducer", () => {
     expect(state.timeline).toHaveLength(1);
     expect(state.timeline[0]).toMatchObject({ kind: "message", role: "assistant", content: "Hello", streaming: false });
   });
+
+  it("represents max tool steps as an incomplete terminal card", () => {
+    const payload = { reason: "max_tool_steps", usedSteps: 50, maxSteps: 50, message: "not complete" };
+    const state = sessionReducer(initialSessionState("session-1"), {
+      type: "event",
+      event: event(4, "turn.incomplete", payload),
+    });
+
+    expect(state.status).toBe("incomplete");
+    expect(state.terminal).toEqual(payload);
+    expect(state.timeline).toMatchObject([{ kind: "incomplete", reason: "max_tool_steps" }]);
+  });
+
+  it("restores an incomplete terminal card from a snapshot", () => {
+    const state = sessionReducer(initialSessionState("session-1"), {
+      type: "event",
+      event: event(7, "session.snapshot", {
+        sessionId: "session-1",
+        workspace: "/workspace",
+        status: "incomplete",
+        messages: [{ role: "user", content: "finish it" }],
+        pendingPermissions: [],
+        error: null,
+        terminal: { reason: "max_tool_steps", usedSteps: 50, maxSteps: 50, message: "not complete" },
+      }),
+    });
+
+    expect(state.status).toBe("incomplete");
+    expect(state.timeline.map((item) => item.kind)).toEqual(["message", "incomplete"]);
+  });
+
+  it("starts a continuation without duplicating the previous incomplete card", () => {
+    let state = sessionReducer(initialSessionState("session-1"), {
+      type: "event",
+      event: event(4, "turn.incomplete", { reason: "max_tool_steps", usedSteps: 50, maxSteps: 50, message: "not complete" }),
+    });
+    state = sessionReducer(state, {
+      type: "event",
+      event: event(5, "turn.started", { message: "Continue from existing results" }),
+    });
+
+    expect(state.terminal).toBeNull();
+    expect(state.timeline.map((item) => item.kind)).toEqual(["message"]);
+  });
 });

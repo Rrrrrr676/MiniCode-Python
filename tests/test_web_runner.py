@@ -8,6 +8,7 @@ import pytest
 
 import minicode.session as session_module
 from minicode.web.runner import PermissionResolutionError, WebSessionRunner
+from minicode.types import RuntimeEvent
 
 
 @pytest.fixture
@@ -28,7 +29,10 @@ def _wait_for_terminal(runner: WebSessionRunner, session_id: str, timeout: float
         collected.extend(events)
         if events:
             cursor = events[-1].seq
-        if any(event.type in {"turn.completed", "turn.failed", "turn.cancelled"} for event in collected):
+        if any(
+            event.type in {"turn.completed", "turn.failed", "turn.incomplete", "turn.cancelled"}
+            for event in collected
+        ):
             return collected
     raise AssertionError("Web turn did not reach a terminal event")
 
@@ -55,6 +59,57 @@ def test_runner_maps_callbacks_and_persists_completed_turn(isolated_sessions: Pa
     assert runner.snapshot(snapshot.sessionId).activities[-1]["message"] == "Reading workspace"
     assert runner.snapshot(snapshot.sessionId).activities[-1]["turnId"].startswith("turn-")
     runner.close()
+
+
+def test_max_tool_steps_is_structured_and_restored_from_snapshot(
+    isolated_sessions: Path,
+) -> None:
+    fallback = "Reached the maximum tool step limit for this turn."
+
+    def execute(context):
+        context.callbacks.on_tool_start("read_file", {"path": "README.md"})
+        context.callbacks.on_tool_result("read_file", "contents", False)
+        context.callbacks.on_runtime_event(
+            RuntimeEvent(
+                category="stop",
+                message=fallback,
+                step=1,
+                stop_reason="max_steps",
+            )
+        )
+        context.callbacks.on_assistant_message(fallback)
+        return [*context.session.messages, {"role": "assistant", "content": fallback}]
+
+    runner = WebSessionRunner(isolated_sessions, executor=execute)
+    snapshot = runner.create_session()
+    runner.submit_message(snapshot.sessionId, "Inspect the project")
+    events = _wait_for_terminal(runner, snapshot.sessionId)
+
+    terminal = next(event for event in events if event.type == "turn.incomplete")
+    assert terminal.payload == {
+        "reason": "max_tool_steps",
+        "usedSteps": 1,
+        "maxSteps": 1,
+        "message": "The task is not complete because this turn reached its tool-call limit.",
+    }
+    assert not any(event.type == "assistant.completed" for event in events)
+    restored = runner.snapshot(snapshot.sessionId)
+    assert restored.status == "incomplete"
+    assert restored.terminal == terminal.payload
+    assert fallback not in str(restored.messages)
+    runner.close()
+
+    reloaded_runner = WebSessionRunner(isolated_sessions, executor=execute)
+    cold_summary = next(
+        item
+        for item in reloaded_runner.list_session_summaries()
+        if item.sessionId == snapshot.sessionId
+    )
+    assert cold_summary.status == "incomplete"
+    reloaded = reloaded_runner.snapshot(snapshot.sessionId)
+    assert reloaded.status == "incomplete"
+    assert reloaded.terminal["reason"] == "max_tool_steps"
+    reloaded_runner.close()
 
 
 def test_runner_maps_background_exception_to_sticky_failure(isolated_sessions: Path) -> None:

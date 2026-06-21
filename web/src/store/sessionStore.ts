@@ -5,6 +5,7 @@ import type {
   FailurePayload,
   PermissionRequest,
   TimelineItem,
+  TerminalPayload,
   ToolActivity,
   TurnStatus,
   WebEvent,
@@ -27,6 +28,7 @@ export interface SessionViewState {
   permissions: Record<string, PermissionRequest>;
   activities: ActivityItem[];
   error: FailurePayload | null;
+  terminal: TerminalPayload | null;
   diffRevision: number;
 }
 
@@ -53,6 +55,7 @@ export function initialSessionState(sessionId = ""): SessionViewState {
     permissions: {},
     activities: [],
     error: null,
+    terminal: null,
     diffRevision: 0,
   };
 }
@@ -253,6 +256,16 @@ export function sessionReducer(state: SessionViewState, action: SessionAction): 
           turnId: event.turnId,
         });
       }
+      const snapshotTerminal = event.payload.terminal as TerminalPayload | null | undefined;
+      if (snapshotTerminal?.reason === "max_tool_steps") {
+        restoredTimeline.push({
+          id: `incomplete-snapshot-${restoredTimeline.length + 1}`,
+          kind: "incomplete",
+          reason: "max_tool_steps",
+          seq: restoredTimeline.length + 1,
+          turnId: event.turnId,
+        });
+      }
       return {
         ...base,
         sessionId: text(event.payload, "sessionId") || event.sessionId,
@@ -266,6 +279,7 @@ export function sessionReducer(state: SessionViewState, action: SessionAction): 
         activities: activitiesFromSnapshot(event.payload.activities, event.timestamp),
         permissions: restoredPermissions,
         error: snapshotError ?? null,
+        terminal: snapshotTerminal ?? null,
       };
     }
     case "turn.started": {
@@ -283,11 +297,15 @@ export function sessionReducer(state: SessionViewState, action: SessionAction): 
         ...base,
         status: "running",
         error: null,
+        terminal: null,
         streamText: "",
         messages: shouldAppend ? [...base.messages, userMessage] : base.messages,
         timeline: shouldAppend
-          ? [...base.timeline, { ...userMessage, kind: "message", seq: event.seq, turnId: event.turnId }]
-          : base.timeline,
+          ? [
+              ...base.timeline.filter((item) => item.kind !== "incomplete"),
+              { ...userMessage, kind: "message", seq: event.seq, turnId: event.turnId },
+            ]
+          : base.timeline.filter((item) => item.kind !== "incomplete"),
       };
     }
     case "assistant.delta":
@@ -376,7 +394,7 @@ export function sessionReducer(state: SessionViewState, action: SessionAction): 
         status: "waiting_permission",
         permissions: { ...base.permissions, [request.requestId]: request },
         timeline: [
-          ...base.timeline,
+          ...base.timeline.filter((item) => item.kind !== "incomplete"),
           { id: `permission-${request.requestId}`, kind: "permission", requestId: request.requestId, seq: event.seq, turnId: event.turnId },
         ],
       };
@@ -403,6 +421,24 @@ export function sessionReducer(state: SessionViewState, action: SessionAction): 
           },
         ],
       };
+    case "turn.incomplete": {
+      const terminal = event.payload as unknown as TerminalPayload;
+      return {
+        ...base,
+        status: "incomplete",
+        terminal,
+        timeline: [
+          ...base.timeline.filter((item) => item.kind !== "incomplete"),
+          {
+            id: `incomplete-${event.seq}`,
+            kind: "incomplete",
+            reason: "max_tool_steps",
+            seq: event.seq,
+            turnId: event.turnId,
+          },
+        ],
+      };
+    }
     case "turn.completed":
       return { ...base, status: "completed" };
     case "turn.cancelled":

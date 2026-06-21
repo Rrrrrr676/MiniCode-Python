@@ -87,6 +87,7 @@ class WebSessionState:
     status: TurnStatus = "idle"
     active_turn_id: str = ""
     last_error: dict[str, Any] | None = None
+    terminal: dict[str, Any] | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
     future: Future[None] | None = None
 
@@ -131,9 +132,25 @@ class WebSessionRunner:
         session = load_session(session_id)
         if session is None or Path(session.workspace).resolve() != Path(self.workspace):
             raise SessionNotFoundError(session_id)
+        terminal = next(
+            (
+                dict(entry.get("payload", {}))
+                for entry in reversed(session.transcript_entries)
+                if entry.get("kind") == "web_turn_terminal"
+                and entry.get("payload", {}).get("reason") == "max_tool_steps"
+            ),
+            None,
+        )
         state = WebSessionState(
             session=session,
-            status="completed" if any(msg.get("role") == "assistant" for msg in session.messages) else "idle",
+            status=(
+                "incomplete"
+                if terminal
+                else "completed"
+                if any(msg.get("role") == "assistant" for msg in session.messages)
+                else "idle"
+            ),
+            terminal=terminal,
         )
         with self._lock:
             return self._states.setdefault(session_id, state)
@@ -161,9 +178,25 @@ class WebSessionRunner:
                 continue
             with self._lock:
                 state = self._states.get(metadata.session_id)
-            status: TurnStatus = state.status if state else (
-                "completed" if metadata.message_count else "idle"
-            )
+            if state:
+                status: TurnStatus = state.status
+            else:
+                persisted = load_session(metadata.session_id)
+                has_incomplete_terminal = bool(
+                    persisted
+                    and any(
+                        entry.get("kind") == "web_turn_terminal"
+                        and entry.get("payload", {}).get("reason") == "max_tool_steps"
+                        for entry in reversed(persisted.transcript_entries)
+                    )
+                )
+                status = (
+                    "incomplete"
+                    if has_incomplete_terminal
+                    else "completed"
+                    if metadata.message_count
+                    else "idle"
+                )
             title = metadata.first_message or metadata.last_message or "New session"
             summaries.append(
                 SessionSummary(
@@ -225,6 +258,7 @@ class WebSessionRunner:
                 "activities": activities,
                 "pendingPermissions": pending,
                 "error": sanitize_for_web(state.last_error),
+                "terminal": sanitize_for_web(state.terminal),
             }
 
     def submit_message(self, session_id: str, content: str) -> tuple[str, int]:
@@ -243,7 +277,13 @@ class WebSessionRunner:
             state.status = "running"
             state.active_turn_id = turn_id
             state.last_error = None
+            state.terminal = None
             state.cancel_event = threading.Event()
+            state.session.transcript_entries = [
+                entry
+                for entry in state.session.transcript_entries
+                if entry.get("kind") != "web_turn_terminal"
+            ]
             state.session.messages.append({"role": "user", "content": message})
             state.session.history.append(message)
             save_session(state.session)
@@ -365,6 +405,8 @@ class WebSessionRunner:
         session_id = state.session.session_id
         tool_starts: dict[str, deque[tuple[str, float]]] = defaultdict(deque)
         callback_lock = threading.RLock()
+        terminal: dict[str, Any] = {}
+        completed_tool_count = 0
 
         def check_cancelled() -> None:
             if state.cancel_event.is_set():
@@ -390,6 +432,7 @@ class WebSessionRunner:
             )
 
         def on_tool_result(name: str, output: str, is_error: bool) -> None:
+            nonlocal completed_tool_count
             with callback_lock:
                 tool_id, started_at = (
                     tool_starts[name].popleft()
@@ -407,19 +450,42 @@ class WebSessionRunner:
                 },
             )
             publish("diff.updated", {"source": name})
+            completed_tool_count += 1
+
+        def on_assistant_message(content: str) -> None:
+            # A structured stop event arrives before the legacy fallback text.
+            # Suppressing that callback keeps max-step exhaustion out of normal answers.
+            if terminal.get("reason") != "max_tool_steps":
+                publish("assistant.completed", {"content": content})
+
+        def on_runtime_event(event: Any) -> None:
+            payload = (
+                asdict(event)
+                if hasattr(event, "__dataclass_fields__")
+                else {"message": str(event)}
+            )
+            if (
+                payload.get("category") == "stop"
+                and payload.get("stop_reason") == "max_steps"
+            ):
+                used_steps = int(payload.get("step") or completed_tool_count)
+                terminal.update(
+                    {
+                        "reason": "max_tool_steps",
+                        "usedSteps": used_steps,
+                        "maxSteps": used_steps,
+                        "message": "The task is not complete because this turn reached its tool-call limit.",
+                    }
+                )
+            publish("runtime.phase", payload)
 
         callbacks = TurnCallbacks(
             on_stream_chunk=lambda chunk: publish("assistant.delta", {"content": chunk}),
-            on_assistant_message=lambda content: publish(
-                "assistant.completed", {"content": content}
-            ),
+            on_assistant_message=on_assistant_message,
             on_progress_message=lambda message_text: publish(
                 "runtime.phase", {"category": "progress", "message": message_text}
             ),
-            on_runtime_event=lambda event: publish(
-                "runtime.phase",
-                asdict(event) if hasattr(event, "__dataclass_fields__") else {"message": str(event)},
-            ),
+            on_runtime_event=on_runtime_event,
             on_tool_start=on_tool_start,
             on_tool_result=on_tool_result,
         )
@@ -435,20 +501,43 @@ class WebSessionRunner:
         try:
             result_messages = self._executor(context)
             check_cancelled()
+            persisted_messages = [
+                sanitize_for_web(item)
+                for item in result_messages
+                if item.get("role") != "system"
+            ]
+            if terminal.get("reason") == "max_tool_steps" and persisted_messages:
+                # The core currently appends a compatibility fallback after emitting
+                # the structured stop event. It is not a user-facing answer.
+                if persisted_messages[-1].get("role") == "assistant":
+                    persisted_messages.pop()
             with self._lock:
-                state.session.messages = [
-                    sanitize_for_web(item)
-                    for item in result_messages
-                    if item.get("role") != "system"
-                ]
-                state.status = "completed"
+                state.session.messages = persisted_messages
+                state.terminal = sanitize_for_web(terminal) if terminal else None
+                state.status = "incomplete" if state.terminal else "completed"
+                if state.terminal:
+                    state.session.transcript_entries.append(
+                        {
+                            "kind": "web_turn_terminal",
+                            "turnId": turn_id,
+                            "payload": state.terminal,
+                        }
+                    )
                 save_session(state.session, force_full=True)
-            self.broker.publish(
-                session_id=session_id,
-                turn_id=turn_id,
-                event_type="turn.completed",
-                payload={"status": "completed"},
-            )
+            if state.terminal:
+                self.broker.publish(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    event_type="turn.incomplete",
+                    payload=state.terminal,
+                )
+            else:
+                self.broker.publish(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    event_type="turn.completed",
+                    payload={"status": "completed"},
+                )
         except TurnCancelledError:
             with self._lock:
                 state.status = "cancelled"

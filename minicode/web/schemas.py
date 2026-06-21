@@ -8,7 +8,13 @@ from pydantic import BaseModel, Field
 
 
 TurnStatus = Literal[
-    "idle", "running", "waiting_permission", "failed", "completed", "cancelled"
+    "idle",
+    "running",
+    "waiting_permission",
+    "failed",
+    "incomplete",
+    "completed",
+    "cancelled",
 ]
 
 
@@ -52,6 +58,7 @@ class SessionSnapshot(BaseModel):
     activities: list[dict[str, Any]] = Field(default_factory=list)
     pendingPermissions: list[dict[str, Any]] = Field(default_factory=list)
     error: dict[str, Any] | None = None
+    terminal: dict[str, Any] | None = None
 
 
 class DiffFile(BaseModel):
