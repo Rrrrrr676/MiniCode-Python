@@ -8,7 +8,7 @@ from minicode.runtime.profile_eval import (
     summarize_runtime_profile_eval,
 )
 from minicode.tooling import ToolRegistry
-from minicode.types import AgentStep, ChatMessage, ModelAdapter
+from minicode.core.types import AgentStep, ChatMessage, ModelAdapter
 
 
 class ScriptedModel(ModelAdapter):

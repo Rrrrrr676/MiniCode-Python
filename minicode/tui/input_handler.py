@@ -6,14 +6,14 @@ import sys
 import threading
 from typing import Any, Callable
 from minicode.tui.state import AggregatedEditProgress, ScreenState, TtyAppArgs
-from minicode.cli_commands import try_handle_local_command, find_matching_slash_commands
+from minicode.cli.commands import try_handle_local_command, find_matching_slash_commands
 from minicode.agent_loop import run_agent_turn
 from minicode.context.manager import save_context_state
 from minicode.persistence.history import save_history_entries
-from minicode.local_tool_shortcuts import parse_local_tool_shortcut
+from minicode.cli.shortcuts import parse_local_tool_shortcut
 from minicode.context.prompt import build_system_prompt_bundle
 from minicode.tooling import ToolContext
-from minicode.types import RuntimeEvent
+from minicode.core.types import RuntimeEvent
 from minicode.tui.session_flow import refresh_tty_session_snapshot
 from minicode.tui.tool_helpers import _summarize_tool_input, _is_file_edit_tool, _extract_path_from_tool_input, _summarize_collapsed_tool_body
 from minicode.tui.tool_lifecycle import _push_transcript_entry, _update_tool_entry, _update_transcript_entry, _append_to_transcript_entry, _collapse_tool_entry, _finalize_dangling_running_tools, _get_running_tool_entries, _schedule_tool_auto_collapse
@@ -396,7 +396,7 @@ def _handle_input(
     state.is_busy = True
     
     # Hook: user input
-    from minicode.hooks import HookEvent, fire_hook_sync
+    from minicode.integrations.hooks import HookEvent, fire_hook_sync
     fire_hook_sync(HookEvent.USER_INPUT, user_input=input_text)
     
     # Prompt injection detection (input layer)
@@ -412,7 +412,7 @@ def _handle_input(
     
     # Update app state
     if state.app_state:
-        from minicode.state import set_busy
+        from minicode.core.state import set_busy
         state.app_state.set_state(set_busy())
     
     rerender()

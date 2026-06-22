@@ -695,7 +695,7 @@ def try_handle_local_command(
 
     if user_input == "/state":
         try:
-            from minicode.state import handle_state_command
+            from minicode.core.state import handle_state_command
             return handle_state_command()
         except ImportError:
             return "State system not available. Please ensure state.py exists."

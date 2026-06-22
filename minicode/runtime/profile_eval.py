@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from minicode.agent_loop import run_agent_turn
 from minicode.tooling import ToolRegistry
-from minicode.types import ChatMessage, ModelAdapter, RuntimeEvent
+from minicode.core.types import ChatMessage, ModelAdapter, RuntimeEvent
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from minicode.skills import load_skill
+from minicode.integrations.skills import load_skill
 from minicode.tooling import ToolDefinition, ToolResult
 
 

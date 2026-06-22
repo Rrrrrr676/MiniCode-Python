@@ -11,11 +11,11 @@ from minicode.providers.retry import (
     RETRYABLE_STATUS,
     calculate_backoff,
 )
-from minicode.state import add_cost, record_api_error, update_context_usage
-from minicode.types import AgentStep, StepDiagnostics
+from minicode.core.state import add_cost, record_api_error, update_context_usage
+from minicode.core.types import AgentStep, StepDiagnostics
 
 if TYPE_CHECKING:
-    from minicode.state import Store, AppState
+    from minicode.core.state import Store, AppState
 
 DEFAULT_MAX_RETRIES = 4
 

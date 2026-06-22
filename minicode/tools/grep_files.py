@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from minicode.tooling import ToolDefinition, ToolResult
-from minicode.workspace import resolve_tool_path
+from minicode.core.workspace import resolve_tool_path
 
 
 # ---------------------------------------------------------------------------

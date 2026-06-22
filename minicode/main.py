@@ -6,11 +6,11 @@ import os
 from pathlib import Path
 
 from minicode.agent_loop import run_agent_turn
-from minicode.cli_commands import try_handle_local_command
+from minicode.cli.commands import try_handle_local_command
 from minicode.config import load_runtime_config
 from minicode.persistence.history import load_history_entries, save_history_entries
-from minicode.local_tool_shortcuts import parse_local_tool_shortcut
-from minicode.manage_cli import maybe_handle_management_command
+from minicode.cli.shortcuts import parse_local_tool_shortcut
+from minicode.cli.management import maybe_handle_management_command
 from minicode.providers.registry import create_model_adapter
 from minicode.safety.permissions import PermissionManager
 from minicode.context.prompt import build_system_prompt_bundle
@@ -29,7 +29,7 @@ from minicode.tooling import ToolContext
 from minicode.tui.transcript import format_transcript_text
 from minicode.tui.types import TranscriptEntry
 from minicode.tty_app import run_tty_app
-from minicode.workspace import resolve_tool_path
+from minicode.core.workspace import resolve_tool_path
 
 
 def _handle_local_command(user_input: str, tools) -> str | None:
@@ -342,7 +342,7 @@ def main() -> None:
     
     # Run installer if requested
     if args.install:
-        from minicode.install import main as install_main
+        from minicode.cli.install import main as install_main
         install_main()
         return
     
@@ -440,7 +440,7 @@ def main() -> None:
                 profile_manager.project_path.exists())
     
     # Initialize Store for global state management (inspired by Claude Code's Zustand store)
-    from minicode.state import create_app_store
+    from minicode.core.state import create_app_store
     app_store = create_app_store(
         initial={
             "session_id": args.session or "new",

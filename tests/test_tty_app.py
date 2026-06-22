@@ -471,7 +471,7 @@ def test_tty_session_command_uses_live_session_snapshot(tmp_path) -> None:
 def test_tty_sessions_command_lists_workspace_history(tmp_path, monkeypatch) -> None:
     workspace = str(tmp_path.resolve())
     monkeypatch.setattr(
-        "minicode.cli_commands.list_sessions",
+        "minicode.cli.commands.list_sessions",
         lambda: [
             SessionMetadata(
                 session_id="aaa111111111",
@@ -564,7 +564,7 @@ def test_tty_rewind_command_rewinds_active_session(tmp_path, monkeypatch) -> Non
         session_arg.update_metadata()
         return [checkpoint]
 
-    monkeypatch.setattr("minicode.cli_commands.rewind_session_data", fake_rewind)
+    monkeypatch.setattr("minicode.cli.commands.rewind_session_data", fake_rewind)
 
     state = ScreenState(
         input="/rewind",
@@ -606,7 +606,7 @@ def test_tty_session_rewind_command_rewinds_saved_session(tmp_path, monkeypatch)
     session.checkpoints = [checkpoint]
     session.update_metadata()
     monkeypatch.setattr(
-        "minicode.cli_commands.get_latest_session",
+        "minicode.cli.commands.get_latest_session",
         lambda workspace=None: session if workspace == str(tmp_path.resolve()) else None,
         raising=False,
     )
@@ -619,7 +619,7 @@ def test_tty_session_rewind_command_rewinds_saved_session(tmp_path, monkeypatch)
         session.update_metadata()
         return session, [checkpoint]
 
-    monkeypatch.setattr("minicode.cli_commands.rewind_session", fake_rewind)
+    monkeypatch.setattr("minicode.cli.commands.rewind_session", fake_rewind)
 
     state = ScreenState(input="/session-rewind latest", cursor_offset=len("/session-rewind latest"))
     args = TtyAppArgs(
@@ -642,7 +642,7 @@ def test_tty_session_rewind_command_rewinds_saved_session(tmp_path, monkeypatch)
 def test_tty_session_replay_command_lists_saved_timeline(tmp_path, monkeypatch) -> None:
     workspace = str(tmp_path.resolve())
     monkeypatch.setattr(
-        "minicode.cli_commands.get_latest_session",
+        "minicode.cli.commands.get_latest_session",
         lambda workspace=None: SessionData(
             session_id="aaa111111111",
             created_at=1.0,

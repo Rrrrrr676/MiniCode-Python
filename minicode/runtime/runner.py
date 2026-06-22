@@ -8,9 +8,9 @@ from minicode.context.tokens import estimate_message_tokens
 from minicode.context.manager import ContextManager
 from minicode.observability.logging import get_logger
 from minicode.safety.permissions import PermissionManager
-from minicode.state import Store, AppState, increment_tool_calls, set_busy, set_idle
+from minicode.core.state import Store, AppState, increment_tool_calls, set_busy, set_idle
 from minicode.tooling import ToolContext, ToolRegistry, ToolResult
-from minicode.types import (
+from minicode.core.types import (
     AgentStep,
     ChatMessage,
     ModelAdapter,
@@ -19,7 +19,7 @@ from minicode.types import (
 )
 
 # Hooks integration
-from minicode.hooks import HookEvent, fire_hook_sync
+from minicode.integrations.hooks import HookEvent, fire_hook_sync
 
 # Intelligence integration
 from minicode.observability.metrics import AgentMetricsCollector

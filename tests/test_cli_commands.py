@@ -1,5 +1,5 @@
-from minicode.cli_commands import find_matching_slash_commands, format_slash_commands, try_handle_local_command
-from minicode.local_tool_shortcuts import parse_local_tool_shortcut
+from minicode.cli.commands import find_matching_slash_commands, format_slash_commands, try_handle_local_command
+from minicode.cli.shortcuts import parse_local_tool_shortcut
 from minicode.session import FileCheckpoint, SessionData, SessionMetadata
 
 
@@ -291,7 +291,7 @@ def test_sessions_command_lists_saved_workspace_sessions(tmp_path, monkeypatch) 
     workspace = str(tmp_path.resolve())
     other_workspace = str((tmp_path / "other").resolve())
     monkeypatch.setattr(
-        "minicode.cli_commands.list_sessions",
+        "minicode.cli.commands.list_sessions",
         lambda: [
             SessionMetadata(
                 session_id="aaa111111111",
@@ -331,7 +331,7 @@ def test_session_command_latest_uses_workspace_session(tmp_path, monkeypatch) ->
         transcript_entries=[{"kind": "assistant", "body": "restored"}],
     )
     monkeypatch.setattr(
-        "minicode.cli_commands.get_latest_session",
+        "minicode.cli.commands.get_latest_session",
         lambda workspace=None: session if workspace == str(tmp_path.resolve()) else None,
         raising=False,
     )
@@ -354,7 +354,7 @@ def test_session_replay_command_latest_uses_workspace_session(tmp_path, monkeypa
         transcript_entries=[{"kind": "assistant", "body": "restored"}],
     )
     monkeypatch.setattr(
-        "minicode.cli_commands.get_latest_session",
+        "minicode.cli.commands.get_latest_session",
         lambda workspace=None: session if workspace == str(tmp_path.resolve()) else None,
         raising=False,
     )
@@ -386,7 +386,7 @@ def test_checkpoints_command_latest_uses_workspace_session(tmp_path, monkeypatch
     )
     session.update_metadata()
     monkeypatch.setattr(
-        "minicode.cli_commands.get_latest_session",
+        "minicode.cli.commands.get_latest_session",
         lambda workspace=None: session if workspace == str(tmp_path.resolve()) else None,
         raising=False,
     )
@@ -423,7 +423,7 @@ def test_rewind_command_rewinds_active_session(monkeypatch) -> None:
         session_arg.update_metadata()
         return [checkpoint]
 
-    monkeypatch.setattr("minicode.cli_commands.rewind_session_data", fake_rewind)
+    monkeypatch.setattr("minicode.cli.commands.rewind_session_data", fake_rewind)
 
     result = try_handle_local_command("/rewind", session=session)
 
@@ -476,7 +476,7 @@ def test_session_rewind_command_rewinds_saved_workspace_session(tmp_path, monkey
     session.checkpoints = [checkpoint]
     session.update_metadata()
     monkeypatch.setattr(
-        "minicode.cli_commands.get_latest_session",
+        "minicode.cli.commands.get_latest_session",
         lambda workspace=None: session if workspace == str(tmp_path.resolve()) else None,
         raising=False,
     )
@@ -489,7 +489,7 @@ def test_session_rewind_command_rewinds_saved_workspace_session(tmp_path, monkey
         session.update_metadata()
         return session, [checkpoint]
 
-    monkeypatch.setattr("minicode.cli_commands.rewind_session", fake_rewind)
+    monkeypatch.setattr("minicode.cli.commands.rewind_session", fake_rewind)
 
     result = try_handle_local_command("/session-rewind latest", cwd=workspace)
 
@@ -517,7 +517,7 @@ def test_session_rewind_preview_command_uses_saved_workspace_session(tmp_path, m
     session.checkpoints = [checkpoint]
     session.update_metadata()
     monkeypatch.setattr(
-        "minicode.cli_commands.get_latest_session",
+        "minicode.cli.commands.get_latest_session",
         lambda workspace=None: session if workspace == str(tmp_path.resolve()) else None,
         raising=False,
     )

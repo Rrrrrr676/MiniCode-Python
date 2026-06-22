@@ -6,10 +6,10 @@ from typing import Any, Callable
 from minicode.providers.cost import CostTracker
 from minicode.safety.permissions import PermissionManager
 from minicode.session import AutosaveManager, SessionData
-from minicode.state import AppState, Store
+from minicode.core.state import AppState, Store
 from minicode.tooling import ToolRegistry
 from minicode.tui.types import TranscriptEntry
-from minicode.types import ChatMessage, ModelAdapter
+from minicode.core.types import ChatMessage, ModelAdapter
 
 
 @dataclass

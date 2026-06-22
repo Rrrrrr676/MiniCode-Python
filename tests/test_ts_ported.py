@@ -22,7 +22,7 @@ from minicode.context.manager import (
     get_model_context_window,
     token_count_with_estimation,
 )
-from minicode.local_tool_shortcuts import parse_local_tool_shortcut
+from minicode.cli.shortcuts import parse_local_tool_shortcut
 from minicode.tui.input_parser import parse_input_chunk
 from minicode.tui.types import TranscriptEntry
 
@@ -53,7 +53,7 @@ def test_parse_input_chunk_real_enter_still_submits() -> None:
 
 
 def test_slash_commands_registers_help_and_exit() -> None:
-    from minicode.cli_commands import SLASH_COMMANDS
+    from minicode.cli.commands import SLASH_COMMANDS
 
     usages = {c.usage for c in SLASH_COMMANDS}
     assert "/help" in usages

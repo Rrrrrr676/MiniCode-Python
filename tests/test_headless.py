@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from minicode.tooling import ToolRegistry
-from minicode.types import AgentStep, ChatMessage, ModelAdapter
+from minicode.core.types import AgentStep, ChatMessage, ModelAdapter
 
 
 class _DummyPermissions:

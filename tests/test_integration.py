@@ -28,7 +28,7 @@ from minicode.providers.mock import MockModelAdapter
 from minicode.safety.permissions import PermissionManager
 from minicode.tooling import ToolContext, ToolRegistry, ToolDefinition, ToolResult
 from minicode.tools import create_default_tool_registry
-from minicode.types import AgentStep, ChatMessage
+from minicode.core.types import AgentStep, ChatMessage
 from minicode.context.manager import ContextManager
 from minicode.session import SessionData, save_session, load_session, list_sessions
 from minicode.config import load_effective_settings, MINI_CODE_DIR
@@ -801,7 +801,7 @@ class TestMCPIntegration:
 
     def test_mcp_import_and_create(self):
         """MCP module imports and creates empty tool set."""
-        from minicode.mcp import create_mcp_backed_tools
+        from minicode.integrations.mcp import create_mcp_backed_tools
 
         result = create_mcp_backed_tools(cwd=".", mcp_servers={})
         assert isinstance(result, dict)

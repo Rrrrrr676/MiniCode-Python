@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from minicode.safety.file_review import apply_reviewed_file_change
 from minicode.tooling import ToolDefinition
-from minicode.workspace import resolve_tool_path
+from minicode.core.workspace import resolve_tool_path
 
 
 def _validate(input_data: dict) -> dict:

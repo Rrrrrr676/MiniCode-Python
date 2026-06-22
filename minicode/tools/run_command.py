@@ -7,9 +7,9 @@ import subprocess
 import sys
 from typing import Sequence
 
-from minicode.background_tasks import register_background_shell_task
+from minicode.integrations.background_tasks import register_background_shell_task
 from minicode.tooling import ToolDefinition, ToolResult
-from minicode.workspace import resolve_tool_path
+from minicode.core.workspace import resolve_tool_path
 
 # 命令执行超时（秒）- 5 分钟
 COMMAND_TIMEOUT = 300

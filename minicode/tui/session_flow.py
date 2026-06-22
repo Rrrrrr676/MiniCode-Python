@@ -18,7 +18,7 @@ from minicode.session import (
     load_session,
     save_session,
 )
-from minicode.state import create_app_store
+from minicode.core.state import create_app_store
 from minicode.tui.state import PendingApproval, ScreenState, TtyAppArgs
 from minicode.tui.tool_lifecycle import _bump_transcript_revision
 from minicode.tui.types import TranscriptEntry

@@ -5,7 +5,7 @@ from typing import Any
 from minicode.safety.permissions import PermissionManager
 from minicode.tooling import ToolContext
 from minicode.tui.types import TranscriptEntry
-from minicode.workspace import resolve_tool_path
+from minicode.core.workspace import resolve_tool_path
 
 
 def _get_session_stats(args: Any, state: Any) -> dict[str, int]:

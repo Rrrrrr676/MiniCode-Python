@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from minicode.background_tasks import get_slot_stats, list_background_tasks
+from minicode.integrations.background_tasks import get_slot_stats, list_background_tasks
 from minicode.config import (
     MINI_CODE_EXTENSIONS_DIR,
     MINI_CODE_MANAGED_POLICY_PATH,
@@ -23,7 +23,7 @@ from minicode.config import (
     project_user_profile_path,
     validate_provider_runtime,
 )
-from minicode.hooks import get_hook_manager
+from minicode.integrations.hooks import get_hook_manager
 from minicode.providers.spec import detect_provider
 
 

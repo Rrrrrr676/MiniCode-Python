@@ -2,7 +2,7 @@ from __future__ import annotations
 import sys
 import time
 from typing import Any
-from minicode.background_tasks import list_background_tasks
+from minicode.integrations.background_tasks import list_background_tasks
 from minicode.session import format_checkpoint_summary_line
 from minicode.tui.chrome import (
     _cached_terminal_size,

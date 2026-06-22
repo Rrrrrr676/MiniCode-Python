@@ -57,7 +57,7 @@ def test_context_manager_window_changes_on_switch():
 
 
 def test_model_command_persists_override(monkeypatch, tmp_path):
-    import minicode.cli_commands as cli_commands
+    import minicode.cli.commands as cli_commands
     import minicode.config as config
 
     settings_path = tmp_path / "settings.json"
@@ -74,10 +74,10 @@ def test_model_command_persists_override(monkeypatch, tmp_path):
 
 
 def test_model_command_show_current(monkeypatch):
-    import minicode.cli_commands as cli_commands
+    import minicode.cli.commands as cli_commands
 
     monkeypatch.setattr(
-        "minicode.cli_commands.load_runtime_config",
+        "minicode.cli.commands.load_runtime_config",
         lambda: {"model": "deepseek-chat", "baseUrl": "https://x", "authToken": "t"},
     )
     result = cli_commands.try_handle_local_command("/model")

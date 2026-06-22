@@ -8,7 +8,7 @@ import pytest
 
 import minicode.session as session_module
 from minicode.web.runner import PermissionResolutionError, WebSessionRunner
-from minicode.types import RuntimeEvent
+from minicode.core.types import RuntimeEvent
 
 
 @pytest.fixture

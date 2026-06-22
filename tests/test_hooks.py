@@ -1,10 +1,10 @@
-"""Tests for minicode.hooks — event-driven hook system."""
+"""Tests for minicode.integrations.hooks — event-driven hook system."""
 
 from __future__ import annotations
 
 import pytest
 
-from minicode.hooks import (
+from minicode.integrations.hooks import (
     HookContext,
     HookEvent,
     HookManager,

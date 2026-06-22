@@ -6,7 +6,7 @@ from typing import Any, Callable, Literal
 
 from minicode.context.layered import ContextBuilder, LayeredContext
 from minicode.runtime.tasks.object import TaskState
-from minicode.types import RuntimeEventCategory
+from minicode.core.types import RuntimeEventCategory
 
 TurnStopReason = Literal[
     "done",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from minicode.types import AgentStep
+from minicode.core.types import AgentStep
 
 
 def _last_user_message(messages):
