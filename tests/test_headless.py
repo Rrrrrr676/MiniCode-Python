@@ -80,7 +80,7 @@ def test_run_headless_forwards_runtime_to_agent_turn(monkeypatch, tmp_path: Path
     monkeypatch.setattr("minicode.safety.permissions.PermissionManager", _DummyPermissions)
     monkeypatch.setattr("minicode.memory.MemoryManager", _DummyMemoryManager)
     monkeypatch.setattr(
-        "minicode.prompt.build_system_prompt",
+        "minicode.context.prompt.build_system_prompt",
         lambda cwd, permissions, context: "sys",
     )
     monkeypatch.setattr(
@@ -128,7 +128,7 @@ def test_run_headless_provider_failure_uses_runtime_channel_details(
     monkeypatch.setattr("minicode.safety.permissions.PermissionManager", _DummyPermissions)
     monkeypatch.setattr("minicode.memory.MemoryManager", _DummyMemoryManager)
     monkeypatch.setattr(
-        "minicode.prompt.build_system_prompt",
+        "minicode.context.prompt.build_system_prompt",
         lambda cwd, permissions, context: "sys",
     )
     monkeypatch.setattr(
@@ -168,7 +168,7 @@ def test_run_headless_writes_messages_trace_when_requested(monkeypatch, tmp_path
     monkeypatch.setattr("minicode.safety.permissions.PermissionManager", _DummyPermissions)
     monkeypatch.setattr("minicode.memory.MemoryManager", _DummyMemoryManager)
     monkeypatch.setattr(
-        "minicode.prompt.build_system_prompt",
+        "minicode.context.prompt.build_system_prompt",
         lambda cwd, permissions, context: "sys",
     )
     monkeypatch.setattr(

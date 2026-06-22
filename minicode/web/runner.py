@@ -579,7 +579,7 @@ class WebSessionRunner:
         from minicode.memory import MemoryManager
         from minicode.providers.registry import create_model_adapter
         from minicode.safety.permissions import PermissionManager
-        from minicode.prompt import build_system_prompt
+        from minicode.context.prompt import build_system_prompt
         from minicode.tools import create_default_tool_registry
 
         runtime = load_runtime_config(self.workspace)

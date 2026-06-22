@@ -27,7 +27,7 @@ from minicode.control.context import (
     AdaptiveThresholdManager,
     CompactionStrategySelector,
 )
-from minicode.context_compactor import (
+from minicode.context.compaction import (
     AutoCompactConfig,
     CompactStrategy,
     CompactTrigger,

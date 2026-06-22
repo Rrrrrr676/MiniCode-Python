@@ -97,7 +97,7 @@ def run_headless(prompt: str | None = None, allow_edits: bool = False) -> str:
     from minicode.memory import MemoryManager
     from minicode.providers.registry import create_model_adapter
     from minicode.safety.permissions import PermissionManager
-    from minicode.prompt import build_system_prompt
+    from minicode.context.prompt import build_system_prompt
     from minicode.tools import create_default_tool_registry
     from minicode.observability.logging import setup_logging, get_logger, structured_logging_requested
 

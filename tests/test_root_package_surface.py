@@ -21,15 +21,11 @@ ROOT_PYTHON_ALLOWLIST = {
 
 LEGACY_ROOT_FACADES = {
     "background_tasks.py",
-    "circuit_breaker.py",
     "cli_commands.py",
-    "context_compactor.py",
-    "context_manager.py",
     "domain_classifier.py",
     "history.py",
     "hooks.py",
     "install.py",
-    "layered_context.py",
     "local_tool_shortcuts.py",
     "manage_cli.py",
     "mcp.py",
@@ -37,16 +33,12 @@ LEGACY_ROOT_FACADES = {
     "memory_injector.py",
     "memory_pipeline.py",
     "memory_reranker.py",
-    "micro_compact.py",
-    "prompt.py",
-    "prompt_pipeline.py",
     "skills.py",
     "state.py",
     "timeline_memory.py",
     "types.py",
     "user_profile.py",
     "vector_memory.py",
-    "working_memory.py",
     "workspace.py",
 }
 

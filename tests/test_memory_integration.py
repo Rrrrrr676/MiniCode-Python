@@ -25,7 +25,7 @@ from minicode.memory import (
     _tokenize,
     _CODE_TERM_EXPANSIONS,
 )
-from minicode.context_manager import ContextManager, estimate_tokens
+from minicode.context.manager import ContextManager, estimate_tokens
 from minicode.session import (
     save_session,
     load_session,
@@ -35,7 +35,7 @@ from minicode.agent_loop import run_agent_turn
 from minicode.providers.mock import MockModelAdapter
 from minicode.safety.permissions import PermissionManager
 from minicode.tools import create_default_tool_registry
-from minicode.prompt import build_system_prompt
+from minicode.context.prompt import build_system_prompt
 
 from tests.test_helpers import (
     verify_memory_integrity,

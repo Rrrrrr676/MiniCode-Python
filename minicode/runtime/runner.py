@@ -5,7 +5,7 @@ import time
 from typing import Any, Callable
 
 from minicode.context.tokens import estimate_message_tokens
-from minicode.context_manager import ContextManager
+from minicode.context.manager import ContextManager
 from minicode.observability.logging import get_logger
 from minicode.safety.permissions import PermissionManager
 from minicode.state import Store, AppState, increment_tool_calls, set_busy, set_idle
@@ -24,7 +24,7 @@ from minicode.hooks import HookEvent, fire_hook_sync
 # Intelligence integration
 from minicode.observability.metrics import AgentMetricsCollector
 from minicode.runtime.intelligence import ErrorClassifier, NudgeGenerator, ToolScheduler
-from minicode.working_memory import get_working_memory, protect_context
+from minicode.context.working import get_working_memory, protect_context
 
 # Work chain integration
 from minicode.runtime.intent import parse_intent
@@ -32,7 +32,7 @@ from minicode.runtime.tasks.object import build_task, TaskObject, TaskState
 from minicode.runtime.tasks.graph import TaskGraph, TaskState as GraphTaskState
 from minicode.runtime.pipeline import get_pipeline_engine
 from minicode.runtime.capabilities import get_registry, CapabilityDomain
-from minicode.layered_context import ContextBuilder, LayeredContext
+from minicode.context.layered import ContextBuilder, LayeredContext
 from minicode.observability.decision_audit import get_auditor, DecisionOutcome
 from minicode.runtime.profiles import resolve_runtime_profile
 
@@ -57,14 +57,14 @@ from minicode.runtime.smart_routing import SmartRouter, TaskOutcome
 from minicode.memory.reflection import ReflectionEngine
 
 # 上下文管理集成 (Claude Code-style + Engineering Cybernetics)
-from minicode.context_compactor import (
+from minicode.context.compaction import (
     ContextCompactor,
     AutoCompactConfig,
 )
 from minicode.control.context import ContextCyberneticsOrchestrator
 from minicode.control.cost import CostControlLoop
-from minicode.micro_compact import MicroCompactor
-from minicode.circuit_breaker import CompactionCircuitBreaker
+from minicode.context.compaction.micro_legacy import MicroCompactor
+from minicode.context.compaction.circuit_breaker import CompactionCircuitBreaker
 from minicode.memory import MemoryManager
 from minicode.runtime.kernel import (
     TurnPreludeState,

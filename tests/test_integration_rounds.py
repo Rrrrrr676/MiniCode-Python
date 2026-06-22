@@ -15,14 +15,14 @@ from pathlib import Path
 import pytest
 
 from minicode.agent_loop import run_agent_turn
-from minicode.context_compactor import ToolResultBudgetManager
-from minicode.context_manager import ContextManager, compute_context_stats
+from minicode.context.compaction import ToolResultBudgetManager
+from minicode.context.manager import ContextManager, compute_context_stats
 from minicode.headless import _make_auto_approve_prompt
 from minicode.memory import MemoryEntry, MemoryManager, MemoryScope
 from minicode.mcp import create_mcp_backed_tools
-from minicode.micro_compact import MicroCompactor, MicroCompactorConfig
+from minicode.context.compaction.micro_legacy import MicroCompactor, MicroCompactorConfig
 from minicode.safety.permissions import PermissionManager
-from minicode.prompt import build_system_prompt_bundle
+from minicode.context.prompt import build_system_prompt_bundle
 from minicode.session import create_new_session, load_session, save_session
 from minicode.tools import create_default_tool_registry
 from minicode.tooling import ToolContext

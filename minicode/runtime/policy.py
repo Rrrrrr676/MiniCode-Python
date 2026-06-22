@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from minicode.circuit_breaker import CompactionCircuitBreaker
+from minicode.context.compaction.circuit_breaker import CompactionCircuitBreaker
 
 
 def is_at_blocking_limit(

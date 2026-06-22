@@ -103,7 +103,7 @@ def test_known_config_provider_context_cycle_is_absent() -> None:
     config_imports = _imports(PACKAGE_ROOT / "config" / "__init__.py")
     adapter_imports = _imports(PACKAGE_ROOT / "providers" / "openai.py")
     assert "minicode.providers.registry" not in config_imports
-    assert "minicode.context_manager" not in adapter_imports
+    assert "minicode.context.manager" not in adapter_imports
 
 
 def test_legacy_core_imports_are_identity_preserving() -> None:

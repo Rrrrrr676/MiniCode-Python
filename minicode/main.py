@@ -13,7 +13,7 @@ from minicode.local_tool_shortcuts import parse_local_tool_shortcut
 from minicode.manage_cli import maybe_handle_management_command
 from minicode.providers.registry import create_model_adapter
 from minicode.safety.permissions import PermissionManager
-from minicode.prompt import build_system_prompt_bundle
+from minicode.context.prompt import build_system_prompt_bundle
 from minicode.session import (
     format_rewind_preview,
     format_session_checkpoints,
@@ -418,7 +418,7 @@ def main() -> None:
     )
     
     # Initialize ContextManager for context window management
-    from minicode.context_manager import ContextManager
+    from minicode.context.manager import ContextManager
     from minicode.observability.logging import get_logger
     logger = get_logger("main")
     context_mgr = None

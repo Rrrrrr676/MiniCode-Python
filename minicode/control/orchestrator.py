@@ -33,7 +33,7 @@ from typing import Any
 
 from minicode.control.adaptive_pid import AdaptivePIDTuner
 from minicode.control.intelligence import ToolScheduler
-from minicode.context_compactor import ContextCompactor
+from minicode.context.compaction import ContextCompactor
 from minicode.control.context import ContextCyberneticsOrchestrator
 from minicode.control.cost import CostControlLoop
 from minicode.control.supervisor import CyberneticSupervisor, save_supervisor_report

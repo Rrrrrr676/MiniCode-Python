@@ -8,10 +8,10 @@ from typing import Any, Callable
 from minicode.tui.state import AggregatedEditProgress, ScreenState, TtyAppArgs
 from minicode.cli_commands import try_handle_local_command, find_matching_slash_commands
 from minicode.agent_loop import run_agent_turn
-from minicode.context_manager import save_context_state
+from minicode.context.manager import save_context_state
 from minicode.history import save_history_entries
 from minicode.local_tool_shortcuts import parse_local_tool_shortcut
-from minicode.prompt import build_system_prompt_bundle
+from minicode.context.prompt import build_system_prompt_bundle
 from minicode.tooling import ToolContext
 from minicode.types import RuntimeEvent
 from minicode.tui.session_flow import refresh_tty_session_snapshot

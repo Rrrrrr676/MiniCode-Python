@@ -52,7 +52,7 @@ class TestStartupAndConfig:
         """Test all core modules import without errors."""
         from minicode.main import main
         from minicode.observability.logging import setup_logging
-        from minicode.context_manager import ContextManager
+        from minicode.context.manager import ContextManager
         from minicode.memory import MemoryManager
         from minicode.config import validate_config
         # If we get here, all imports succeeded
@@ -172,7 +172,7 @@ class TestContextManagement:
 
     def test_token_estimation_ascii(self):
         """Test token estimation for ASCII text."""
-        from minicode.context_manager import estimate_tokens
+        from minicode.context.manager import estimate_tokens
         text = "Hello World " * 100
         tokens = estimate_tokens(text)
         # ~4 chars/token for ASCII
@@ -181,7 +181,7 @@ class TestContextManagement:
 
     def test_token_estimation_chinese(self):
         """Test token estimation for Chinese text."""
-        from minicode.context_manager import estimate_tokens
+        from minicode.context.manager import estimate_tokens
         text = "你好世界" * 100
         tokens = estimate_tokens(text)
         # ~1.5 chars/token for CJK
@@ -190,7 +190,7 @@ class TestContextManagement:
 
     def test_context_manager_stats(self):
         """Test context manager statistics."""
-        from minicode.context_manager import ContextManager
+        from minicode.context.manager import ContextManager
         ctx = ContextManager(model="claude-sonnet-4-20250514")
         ctx.messages = [{"role": "user", "content": "Hello " * 100}]
         stats = ctx.get_stats()
@@ -199,7 +199,7 @@ class TestContextManagement:
 
     def test_context_compaction(self):
         """Test context compaction reduces message count."""
-        from minicode.context_manager import ContextManager
+        from minicode.context.manager import ContextManager
         ctx = ContextManager(model="claude-sonnet-4-20250514", context_window=1000)
         # Add many messages to trigger compaction
         ctx.messages = [{"role": "user", "content": "x" * 50} for _ in range(50)]
@@ -276,7 +276,7 @@ class TestHelpSystem:
 
     def test_context_details_format(self):
         """Test /context command output format."""
-        from minicode.context_manager import ContextManager
+        from minicode.context.manager import ContextManager
         ctx = ContextManager(model="claude-sonnet-4-20250514")
         result = ctx.format_context_details()
         assert "Context Window Usage" in result

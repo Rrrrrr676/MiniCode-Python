@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from minicode.agent_loop import run_agent_turn
-from minicode.context_manager import ContextManager
+from minicode.context.manager import ContextManager
 from minicode.providers.mock import MockModelAdapter
 from minicode.safety.permissions import PermissionManager
 from minicode.tooling import ToolRegistry

@@ -29,10 +29,10 @@ from minicode.safety.permissions import PermissionManager
 from minicode.tooling import ToolContext, ToolRegistry, ToolDefinition, ToolResult
 from minicode.tools import create_default_tool_registry
 from minicode.types import AgentStep, ChatMessage
-from minicode.context_manager import ContextManager
+from minicode.context.manager import ContextManager
 from minicode.session import SessionData, save_session, load_session, list_sessions
 from minicode.config import load_effective_settings, MINI_CODE_DIR
-from minicode.prompt import build_system_prompt
+from minicode.context.prompt import build_system_prompt
 from minicode.tui.types import TranscriptEntry, _create_transcript_entry, _recycle_transcript_entry
 
 

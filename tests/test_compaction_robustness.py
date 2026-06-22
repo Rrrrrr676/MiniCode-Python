@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from minicode.context_compactor import ToolResultBudgetManager
-from minicode.micro_compact import MicroCompactor, MicroCompactorConfig
+from minicode.context.compaction import ToolResultBudgetManager
+from minicode.context.compaction.micro_legacy import MicroCompactor, MicroCompactorConfig
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from minicode.context_manager import (
+from minicode.context.manager import (
     compute_context_stats,
     estimate_message_tokens,
     estimate_messages_tokens,

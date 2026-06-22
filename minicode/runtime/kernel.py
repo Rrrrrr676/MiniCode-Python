@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from math import ceil
 from typing import Any, Callable, Literal
 
-from minicode.layered_context import ContextBuilder, LayeredContext
+from minicode.context.layered import ContextBuilder, LayeredContext
 from minicode.runtime.tasks.object import TaskState
 from minicode.types import RuntimeEventCategory
 

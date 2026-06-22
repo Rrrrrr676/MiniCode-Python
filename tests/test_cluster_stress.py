@@ -21,7 +21,7 @@ except ImportError:
 from minicode.runtime.intelligence import ErrorClassifier
 from minicode.agent_loop import run_agent_turn
 from minicode.observability.metrics import AgentMetricsCollector
-from minicode.context_manager import ContextManager
+from minicode.context.manager import ContextManager
 from minicode.memory import MemoryManager, MemoryScope
 from minicode.tooling import ToolContext, ToolDefinition, ToolRegistry, ToolResult
 from minicode.types import AgentStep, ChatMessage, ModelAdapter

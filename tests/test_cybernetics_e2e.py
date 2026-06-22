@@ -11,7 +11,7 @@ import time
 
 from minicode.control.adaptive_pid import AdaptivePIDTuner
 from minicode.control.context import ContextCyberneticsOrchestrator
-from minicode.context_compactor import ContextCompactor, AutoCompactConfig
+from minicode.context.compaction import ContextCompactor, AutoCompactConfig
 from minicode.control.cost import CostControlLoop
 from minicode.control.supervisor import CyberneticSupervisor
 from minicode.control.feedback import (

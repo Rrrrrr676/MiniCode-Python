@@ -16,7 +16,7 @@ from minicode.providers.retry import (
     is_retryable_error,
     retry_with_backoff,
 )
-from minicode.context_manager import (
+from minicode.context.manager import (
     ContextManager,
     ContextStats,
     estimate_message_tokens,
@@ -135,7 +135,7 @@ def test_context_manager_format_summary():
 
 def test_context_manager_persistence(tmp_path):
     """Test saving and loading context state."""
-    with patch("minicode.context_manager.MINI_CODE_DIR", tmp_path):
+    with patch("minicode.context.manager.MINI_CODE_DIR", tmp_path):
         manager = ContextManager(model="claude-sonnet-4-20250514")
         manager.add_message({"role": "user", "content": "Test"})
         

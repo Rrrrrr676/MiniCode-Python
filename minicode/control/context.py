@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
 
-from minicode.context_compactor import (
+from minicode.context.compaction import (
     CompactStrategy,
     CompactTrigger,
     CompactionResult,

@@ -712,7 +712,7 @@ def try_handle_local_command(
     if user_input == "/context":
         # Context usage display
         try:
-            from minicode.context_manager import load_context_state
+            from minicode.context.manager import load_context_state
             ctx_mgr = load_context_state()
             if ctx_mgr:
                 return ctx_mgr.format_context_details()
@@ -812,7 +812,7 @@ def try_handle_local_command(
 def format_cybernetics_status() -> str:
     """Format cybernetic controller inventory and persisted state hints."""
     from minicode.control.supervisor import CyberneticSupervisor, load_supervisor_report
-    from minicode.context_manager import load_context_state
+    from minicode.context.manager import load_context_state
 
     controllers = [
         ("ContextCyberneticsOrchestrator", "context pressure PID + prediction"),

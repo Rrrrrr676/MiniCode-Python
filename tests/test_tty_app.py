@@ -10,7 +10,7 @@ from minicode.tty_app import (
     summarize_tool_output,
 )
 import minicode.tui.input_handler as input_handler_module
-from minicode.context_manager import ContextManager
+from minicode.context.manager import ContextManager
 from minicode.safety.permissions import PermissionManager
 from minicode.session import FileCheckpoint, SessionData, SessionMetadata
 from minicode.tooling import ToolRegistry

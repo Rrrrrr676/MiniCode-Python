@@ -1,4 +1,4 @@
-"""Tests for minicode.micro_compact — lightweight tool result trimming."""
+"""Tests for minicode.context.compaction.micro_legacy — lightweight tool result trimming."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from minicode.micro_compact import (
+from minicode.context.compaction.micro_legacy import (
     COMPRESSIBLE_READ_ONLY_TOOLS,
     MicroCompactionStats,
     MicroCompactor,

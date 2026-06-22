@@ -18,7 +18,7 @@ import tempfile
 
 import pytest
 
-from minicode.context_compactor import (
+from minicode.context.compaction import (
     AutoCompactConfig,
     AutoCompactDispatcher,
     CompactBoundary,

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from minicode.context_manager import ContextManager
+from minicode.context.manager import ContextManager
 from minicode.providers.switching import ModelSwitcher, SwitchResult
 
 
