@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from minicode.persistence import autosave as _autosave
+from minicode.persistence import rewind as _rewind
 from minicode.persistence import session_storage as _storage
+from minicode.persistence.formatters import (
+    format_checkpoint_summary_line,
+    format_session_checkpoints,
+    format_session_inspect,
+    format_session_list,
+    format_session_replay,
+    format_session_resume,
+)
+from minicode.persistence.rewind import format_rewind_preview, rewind_session_data
 from minicode.persistence.session_storage import (
     AUTOSAVE_INTERVAL_SECONDS,
     DELTA_DIR_NAME,
@@ -14,14 +25,6 @@ from minicode.persistence.session_storage import (
     SessionData,
     SessionMetadata,
     _runtime_summary_from_transcript_entries,
-    format_checkpoint_summary_line,
-    format_rewind_preview,
-    format_session_checkpoints,
-    format_session_inspect,
-    format_session_list,
-    format_session_replay,
-    format_session_resume,
-    rewind_session_data,
 )
 
 
@@ -77,7 +80,7 @@ def create_file_checkpoint(
     previous_content: str,
 ) -> FileCheckpoint | None:
     _sync_paths()
-    return _storage.create_file_checkpoint(
+    return _rewind.create_file_checkpoint(
         session,
         file_path=file_path,
         existed=existed,
@@ -92,14 +95,14 @@ def rewind_session(
     checkpoint_id: str | None = None,
 ) -> tuple[SessionData | None, list[FileCheckpoint]]:
     _sync_paths()
-    return _storage.rewind_session(
+    return _rewind.rewind_session(
         session_id,
         steps=steps,
         checkpoint_id=checkpoint_id,
     )
 
 
-class AutosaveManager(_storage.AutosaveManager):
+class AutosaveManager(_autosave.AutosaveManager):
     """Path-synchronizing compatibility subclass."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
