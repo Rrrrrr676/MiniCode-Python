@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from minicode.providers.cost import CostTracker
-from minicode.history import load_history_entries
+from minicode.persistence.history import load_history_entries
 from minicode.safety.permissions import PermissionManager
 from minicode.session import (
     AutosaveManager,

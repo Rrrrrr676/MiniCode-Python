@@ -802,7 +802,7 @@ def try_handle_local_command(
         return f"saved model={arg} to {MINI_CODE_SETTINGS_PATH}\nRestart MiniCode for the change to take effect."
 
     if user_input == "/user" or user_input.startswith("/user "):
-        from minicode.user_profile import handle_user_command
+        from minicode.persistence.user_profile import handle_user_command
         args = user_input[len("/user"):].strip()
         return handle_user_command(args)
 

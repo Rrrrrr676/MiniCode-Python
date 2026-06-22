@@ -22,7 +22,6 @@ ROOT_PYTHON_ALLOWLIST = {
 LEGACY_ROOT_FACADES = {
     "background_tasks.py",
     "cli_commands.py",
-    "history.py",
     "hooks.py",
     "install.py",
     "local_tool_shortcuts.py",
@@ -31,7 +30,6 @@ LEGACY_ROOT_FACADES = {
     "skills.py",
     "state.py",
     "types.py",
-    "user_profile.py",
     "workspace.py",
 }
 

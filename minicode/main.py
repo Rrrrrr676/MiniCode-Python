@@ -8,7 +8,7 @@ from pathlib import Path
 from minicode.agent_loop import run_agent_turn
 from minicode.cli_commands import try_handle_local_command
 from minicode.config import load_runtime_config
-from minicode.history import load_history_entries, save_history_entries
+from minicode.persistence.history import load_history_entries, save_history_entries
 from minicode.local_tool_shortcuts import parse_local_tool_shortcut
 from minicode.manage_cli import maybe_handle_management_command
 from minicode.providers.registry import create_model_adapter
@@ -432,7 +432,7 @@ def main() -> None:
     logger.info("Memory manager initialized")
     
     # Initialize UserProfileManager for user preferences
-    from minicode.user_profile import UserProfileManager
+    from minicode.persistence.user_profile import UserProfileManager
     profile_manager = UserProfileManager(cwd=cwd)
     profile_manager.load_merged()
     logger.info("User profile manager initialized (global=%s, project=%s)",
