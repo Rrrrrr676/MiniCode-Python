@@ -1,5 +1,6 @@
-"""Agent runtime orchestration."""
+"""Agent runtime package.
 
-from minicode.runtime.runner import run_agent_turn
-
-__all__ = ["run_agent_turn"]
+The stable public entry point lives at :mod:`minicode.agent_loop`.  Keeping
+this package initializer side-effect free lets lower-level runtime modules be
+imported without eagerly importing the composition root.
+"""

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from minicode.cybernetic_orchestrator import CyberneticOrchestrator
+from minicode.control.orchestrator import CyberneticOrchestrator
 
 
 class TestOrchestratorInit:

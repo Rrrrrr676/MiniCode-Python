@@ -1,4 +1,4 @@
-from minicode.cybernetic_supervisor import (
+from minicode.control.supervisor import (
     ControlSnapshot,
     CyberneticSupervisor,
     SupervisorRisk,
@@ -62,7 +62,7 @@ class TestCyberneticSupervisor:
         assert "risk_level" in summary
 
     def test_report_persistence_roundtrip(self, tmp_path, monkeypatch):
-        import minicode.cybernetic_supervisor as supervisor_module
+        import minicode.control.supervisor as supervisor_module
 
         monkeypatch.setattr(
             supervisor_module,

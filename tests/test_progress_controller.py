@@ -1,6 +1,6 @@
 from minicode.intent_parser import ActionType, IntentType, ParsedIntent
 from minicode.pipeline_engine import get_pipeline_engine
-from minicode.progress_controller import (
+from minicode.control.progress import (
     ProgressAction,
     ProgressController,
     ProgressSignal,

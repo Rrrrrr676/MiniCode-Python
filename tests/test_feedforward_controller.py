@@ -1,7 +1,7 @@
 """Unit tests for FeedforwardController — preemptive config, risk assessment, intent routing."""
 from __future__ import annotations
 
-from minicode.feedforward_controller import (
+from minicode.control.feedforward import (
     FeedforwardController,
     PreemptiveConfig,
     PreemptionLevel,

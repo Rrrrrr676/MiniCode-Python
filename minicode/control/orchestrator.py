@@ -31,26 +31,26 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from minicode.adaptive_pid_tuner import AdaptivePIDTuner
+from minicode.control.adaptive_pid import AdaptivePIDTuner
 from minicode.agent_intelligence import ToolScheduler
 from minicode.context_compactor import ContextCompactor
-from minicode.context_cybernetics import ContextCyberneticsOrchestrator
-from minicode.cost_control import CostControlLoop
-from minicode.cybernetic_supervisor import CyberneticSupervisor, save_supervisor_report
-from minicode.decoupling_controller import DecouplingController
-from minicode.feedback_controller import FeedbackController
-from minicode.feedforward_controller import FeedforwardController
+from minicode.control.context import ContextCyberneticsOrchestrator
+from minicode.control.cost import CostControlLoop
+from minicode.control.supervisor import CyberneticSupervisor, save_supervisor_report
+from minicode.control.decoupling import DecouplingController
+from minicode.control.feedback import FeedbackController
+from minicode.control.feedforward import FeedforwardController
 from minicode.observability.logging import get_logger
 from minicode.memory import MemoryManager
 from minicode.memory_injector import (
     MemoryInjectionController,
 )
 from minicode.providers.registry import ModelSelectionController, ModelSelectionSignal
-from minicode.predictive_controller import PredictiveController
-from minicode.progress_controller import ProgressAction, ProgressController, ProgressSignal
-from minicode.self_healing_engine import SelfHealingEngine
-from minicode.stability_monitor import MetricSnapshot, StabilityMonitor
-from minicode.state_observer import MeasurementVector, StateObserver
+from minicode.control.predictive import PredictiveController
+from minicode.control.progress import ProgressAction, ProgressController, ProgressSignal
+from minicode.control.recovery import SelfHealingEngine
+from minicode.control.stability import MetricSnapshot, StabilityMonitor
+from minicode.control.state_observer import MeasurementVector, StateObserver
 
 logger = get_logger("cybernetic_orchestrator")
 

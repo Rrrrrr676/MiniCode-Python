@@ -125,7 +125,7 @@ class TestAgentFlowCybernetics:
         self, monkeypatch, mock_model, tools, messages, workspace, permissions
     ):
         """The agent loop should drive the unified orchestrator lifecycle."""
-        from minicode.cybernetic_orchestrator import CyberneticOrchestrator
+        from minicode.control.orchestrator import CyberneticOrchestrator
 
         calls: list[str] = []
 

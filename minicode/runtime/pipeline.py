@@ -18,11 +18,11 @@ from enum import Enum
 from typing import Any, Callable
 
 from minicode.task_object import TaskObject, TaskState, ConstraintType
-from minicode.cybernetic_supervisor import CyberneticSupervisor
+from minicode.control.supervisor import CyberneticSupervisor
 from minicode.observability.decision_audit import get_auditor, DecisionType, DecisionOutcome
 from minicode.observability.logging import get_logger
-from minicode.progress_controller import ProgressController, ProgressSignal
-from minicode.verification_controller import VerificationController
+from minicode.control.progress import ProgressController, ProgressSignal
+from minicode.control.verification import VerificationController
 
 logger = get_logger("pipeline_engine")
 

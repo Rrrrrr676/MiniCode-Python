@@ -1,6 +1,6 @@
 import json
 
-from minicode.cybernetic_ablation import (
+from minicode.control.ablation import (
     CyberneticAblationRunner,
     format_ablation_report,
     load_harness_task_profiles,

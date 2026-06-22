@@ -14,7 +14,7 @@ import math
 import time
 import pytest
 
-from minicode.context_cybernetics import (
+from minicode.control.context import (
     AnomalyType,
     ContextCyberneticsOrchestrator,
     ContextPIDController,

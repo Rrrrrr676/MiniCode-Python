@@ -811,7 +811,7 @@ def try_handle_local_command(
 
 def format_cybernetics_status() -> str:
     """Format cybernetic controller inventory and persisted state hints."""
-    from minicode.cybernetic_supervisor import CyberneticSupervisor, load_supervisor_report
+    from minicode.control.supervisor import CyberneticSupervisor, load_supervisor_report
     from minicode.context_manager import load_context_state
 
     controllers = [

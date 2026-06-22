@@ -547,8 +547,8 @@ def test_cybernetics_command_shows_controller_inventory() -> None:
 
 
 def test_cybernetics_command_uses_persisted_report(tmp_path, monkeypatch) -> None:
-    import minicode.cybernetic_supervisor as supervisor_module
-    from minicode.cybernetic_supervisor import ControlSnapshot, CyberneticSupervisor, save_supervisor_report
+    import minicode.control.supervisor as supervisor_module
+    from minicode.control.supervisor import ControlSnapshot, CyberneticSupervisor, save_supervisor_report
 
     monkeypatch.setattr(
         supervisor_module,

@@ -60,7 +60,7 @@ from minicode.context_compactor import (
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from minicode.feedback_controller import SystemState
+    from minicode.control.feedback import SystemState
 
 class AnomalyType(Enum):
     SUDDEN_SPIKE = auto()

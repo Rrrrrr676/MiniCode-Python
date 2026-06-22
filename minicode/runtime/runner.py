@@ -37,16 +37,16 @@ from minicode.observability.decision_audit import get_auditor, DecisionOutcome
 from minicode.runtime_profiles import resolve_runtime_profile
 
 # 工程控制论集成
-from minicode.cybernetic_orchestrator import CyberneticOrchestrator
-from minicode.cybernetic_supervisor import save_supervisor_report
-from minicode.feedforward_controller import FeedforwardController
+from minicode.control.orchestrator import CyberneticOrchestrator
+from minicode.control.supervisor import save_supervisor_report
+from minicode.control.feedforward import FeedforwardController
 
 # 高级控制论模块
-from minicode.state_observer import MeasurementVector
-from minicode.self_healing_engine import SelfHealingEngine
+from minicode.control.state_observer import MeasurementVector
+from minicode.control.recovery import SelfHealingEngine
 
 # 任务进度控制
-from minicode.progress_controller import ProgressSignal, ProgressAction
+from minicode.control.progress import ProgressSignal, ProgressAction
 
 # 记忆注入和模型选择控制
 from minicode.memory_injector import MemoryInjectionSignal, MemoryInjector
@@ -60,8 +60,8 @@ from minicode.context_compactor import (
     ContextCompactor,
     AutoCompactConfig,
 )
-from minicode.context_cybernetics import ContextCyberneticsOrchestrator
-from minicode.cost_control import CostControlLoop
+from minicode.control.context import ContextCyberneticsOrchestrator
+from minicode.control.cost import CostControlLoop
 from minicode.micro_compact import MicroCompactor
 from minicode.circuit_breaker import CompactionCircuitBreaker
 from minicode.memory import MemoryManager
@@ -1816,7 +1816,7 @@ def run_agent_turn(
 
         # 稳定性监测：记录快照
         if stability_monitor:
-            from minicode.stability_monitor import MetricSnapshot
+            from minicode.control.stability import MetricSnapshot
             snapshot = MetricSnapshot(
                 timestamp=time.time(),
                 error_rate=float(turn_state.tool_error_count) / max(turn_state.step, 1),

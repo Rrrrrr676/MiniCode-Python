@@ -11,7 +11,7 @@ Covers all 5 components of the cost control closed-loop:
 import time
 import pytest
 
-from minicode.cost_control import (
+from minicode.control.cost import (
     BudgetActuator,
     BudgetAdjustment,
     BudgetPIDController,

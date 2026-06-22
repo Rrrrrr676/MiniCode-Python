@@ -14,11 +14,11 @@ from statistics import mean
 from typing import Any
 
 from minicode.agent_intelligence import ToolSchedulerController, ToolSchedulingSignal
-from minicode.cybernetic_supervisor import CyberneticSupervisor
+from minicode.control.supervisor import CyberneticSupervisor
 from minicode.memory_injector import MemoryInjectionController, MemoryInjectionSignal
 from minicode.providers.registry import ModelSelectionController, ModelSelectionSignal
-from minicode.progress_controller import ProgressController, ProgressSignal
-from minicode.verification_controller import VerificationController, VerificationSignal
+from minicode.control.progress import ProgressController, ProgressSignal
+from minicode.control.verification import VerificationController, VerificationSignal
 
 
 @dataclass(frozen=True)
