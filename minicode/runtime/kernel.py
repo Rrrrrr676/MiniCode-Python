@@ -5,7 +5,7 @@ from math import ceil
 from typing import Any, Callable, Literal
 
 from minicode.layered_context import ContextBuilder, LayeredContext
-from minicode.task_object import TaskState
+from minicode.runtime.tasks.object import TaskState
 from minicode.types import RuntimeEventCategory
 
 TurnStopReason = Literal[

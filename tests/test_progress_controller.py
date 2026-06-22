@@ -1,11 +1,11 @@
-from minicode.intent_parser import ActionType, IntentType, ParsedIntent
-from minicode.pipeline_engine import get_pipeline_engine
+from minicode.runtime.intent import ActionType, IntentType, ParsedIntent
+from minicode.runtime.pipeline import get_pipeline_engine
 from minicode.control.progress import (
     ProgressAction,
     ProgressController,
     ProgressSignal,
 )
-from minicode.task_object import TaskObject
+from minicode.runtime.tasks.object import TaskObject
 
 
 class TestProgressController:

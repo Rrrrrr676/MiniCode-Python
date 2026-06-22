@@ -5,9 +5,9 @@ from minicode.control.supervisor import (
     load_supervisor_report,
     save_supervisor_report,
 )
-from minicode.intent_parser import ActionType, IntentType, ParsedIntent
-from minicode.pipeline_engine import get_pipeline_engine
-from minicode.task_object import TaskObject
+from minicode.runtime.intent import ActionType, IntentType, ParsedIntent
+from minicode.runtime.pipeline import get_pipeline_engine
+from minicode.runtime.tasks.object import TaskObject
 
 
 class TestCyberneticSupervisor:

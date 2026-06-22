@@ -11,7 +11,7 @@ from minicode.config import (
     load_runtime_config,
     save_mini_code_settings,
 )
-from minicode.product_surfaces import (
+from minicode.integrations.product_surfaces import (
     build_product_snapshot,
     extension_manifest_payload,
     resolve_extension_manifest,

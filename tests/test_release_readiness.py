@@ -1,4 +1,4 @@
-from minicode.release_readiness import (
+from minicode.runtime.release_readiness import (
     ReleaseCheck,
     classify_provider_outcome,
     release_readiness_as_dict,

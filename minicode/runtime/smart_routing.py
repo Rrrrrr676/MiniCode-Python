@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from minicode.agent_router import AgentRouter, RoutingDecision, extract_task_profile
+from minicode.runtime.routing import AgentRouter, RoutingDecision, extract_task_profile
 from minicode.observability.logging import get_logger
 from minicode.providers.registry import resolve_model_info
 from minicode.providers.switching import ModelSwitcher, SwitchResult

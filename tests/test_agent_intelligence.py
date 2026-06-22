@@ -16,7 +16,7 @@ from minicode.observability.metrics import (
     ToolExecutionRecord,
     ToolHistoricalStats,
 )
-from minicode.agent_intelligence import (
+from minicode.runtime.intelligence import (
     ClassifiedError,
     ErrorCategory as AIErrorCategory,
     ErrorClassifier,

@@ -18,7 +18,7 @@ try:
 except ImportError:
     pytest = None
 
-from minicode.agent_intelligence import ErrorClassifier
+from minicode.runtime.intelligence import ErrorClassifier
 from minicode.agent_loop import run_agent_turn
 from minicode.observability.metrics import AgentMetricsCollector
 from minicode.context_manager import ContextManager

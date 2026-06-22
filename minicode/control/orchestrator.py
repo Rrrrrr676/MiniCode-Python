@@ -32,7 +32,7 @@ import time
 from typing import Any
 
 from minicode.control.adaptive_pid import AdaptivePIDTuner
-from minicode.agent_intelligence import ToolScheduler
+from minicode.control.intelligence import ToolScheduler
 from minicode.context_compactor import ContextCompactor
 from minicode.control.context import ContextCyberneticsOrchestrator
 from minicode.control.cost import CostControlLoop
@@ -112,6 +112,9 @@ class CyberneticOrchestrator:
         model: Any,
         tools: Any,
         runtime: dict | None = None,
+        *,
+        smart_router: Any | None = None,
+        reflection: Any | None = None,
     ) -> None:
         """Initialize all controllers. Call once at task start."""
         self._last_model = model
@@ -127,13 +130,10 @@ class CyberneticOrchestrator:
         self.memory_ctrl = MemoryInjectionController()
         self.model_ctrl = ModelSelectionController()
 
-        # Import-heavy modules (lazy to avoid circular imports)
-        from minicode.agent_reflection import ReflectionEngine
         from minicode.providers.switching import ModelSwitcher
-        from minicode.smart_router import SmartRouter
 
-        self.smart_router = SmartRouter()
-        self.reflection = ReflectionEngine(memory_manager=None)
+        self.smart_router = smart_router
+        self.reflection = reflection
         current_model = str(getattr(model, "model_id", "") or "").strip()
         if not current_model:
             current_model = str((runtime or {}).get("model", "") or "").strip()

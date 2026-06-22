@@ -1,5 +1,5 @@
-from minicode.task_object import TaskState
-from minicode.turn_kernel import (
+from minicode.runtime.tasks.object import TaskState
+from minicode.runtime.kernel import (
     TurnBudgetSignals,
     TurnRecurrentState,
     TurnVerificationState,

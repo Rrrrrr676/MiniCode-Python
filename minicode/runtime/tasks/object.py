@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from minicode.intent_parser import ParsedIntent
+from minicode.runtime.intent import ParsedIntent
 from minicode.observability.logging import get_logger
 
 logger = get_logger("task_object")

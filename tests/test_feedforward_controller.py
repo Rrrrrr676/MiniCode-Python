@@ -7,7 +7,7 @@ from minicode.control.feedforward import (
     PreemptionLevel,
     RiskAssessment,
 )
-from minicode.intent_parser import ActionType, IntentType, ParsedIntent
+from minicode.runtime.intent import ActionType, IntentType, ParsedIntent
 
 
 def _make_intent(

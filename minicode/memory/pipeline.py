@@ -99,7 +99,7 @@ class MemoryPipeline:
         )
 
         # Reflection engine (write path)
-        from minicode.agent_reflection import ReflectionEngine
+        from minicode.memory.reflection import ReflectionEngine
         self._reflection = ReflectionEngine(memory_manager=self._memory)
 
         # Vector store — sparse TF-IDF always available, optional sentence-transformers

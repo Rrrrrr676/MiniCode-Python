@@ -19,9 +19,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from minicode.task_object import ConstraintType, TaskObject
-
-
 class VerificationRisk(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
@@ -97,12 +94,15 @@ class VerificationController:
         "tooling",
     )
 
-    def plan_for_task(self, task: TaskObject) -> VerificationPlan:
+    def plan_for_task(self, task: Any) -> VerificationPlan:
         signal = VerificationSignal(
             changed_files=list(task.relevant_files),
             intent_type=task.parsed_intent.intent_type.value if task.parsed_intent else "",
             action_type=task.parsed_intent.action_type.value if task.parsed_intent else "",
-            requires_tests=any(c.type == ConstraintType.TEST_REQUIRED for c in task.constraints),
+            requires_tests=any(
+                getattr(getattr(c, "type", None), "value", "") == "test_required"
+                for c in task.constraints
+            ),
             coverage_sensitive=any("coverage" in str(c.reason).lower() for c in task.constraints),
             user_requested_full=any("full" in str(c.reason).lower() for c in task.constraints),
         )

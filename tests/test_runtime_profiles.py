@@ -1,4 +1,4 @@
-from minicode.runtime_profiles import get_runtime_profile, resolve_runtime_profile
+from minicode.runtime.profiles import get_runtime_profile, resolve_runtime_profile
 
 
 def test_get_runtime_profile_defaults_to_single() -> None:

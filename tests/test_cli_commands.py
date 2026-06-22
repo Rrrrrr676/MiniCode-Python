@@ -208,7 +208,7 @@ def test_extension_inspect_command_reads_project_manifest(tmp_path, monkeypatch)
     _write_extension_manifest(project_extensions, name="git-helpers", enabled=True, version="1.2.3")
     global_extensions = tmp_path / "global-extensions"
     global_extensions.mkdir()
-    monkeypatch.setattr("minicode.product_surfaces.MINI_CODE_EXTENSIONS_DIR", global_extensions)
+    monkeypatch.setattr("minicode.integrations.product_surfaces.MINI_CODE_EXTENSIONS_DIR", global_extensions)
 
     result = try_handle_local_command("/extension-inspect git-helpers", cwd=str(workspace))
 
@@ -230,7 +230,7 @@ def test_extension_enable_and_disable_commands_update_manifest(tmp_path, monkeyp
     )
     global_extensions = tmp_path / "global-extensions"
     global_extensions.mkdir()
-    monkeypatch.setattr("minicode.product_surfaces.MINI_CODE_EXTENSIONS_DIR", global_extensions)
+    monkeypatch.setattr("minicode.integrations.product_surfaces.MINI_CODE_EXTENSIONS_DIR", global_extensions)
 
     enabled = try_handle_local_command("/extension-enable git-helpers", cwd=str(workspace))
     assert enabled is not None
@@ -251,7 +251,7 @@ def test_extension_inspect_requires_scope_when_names_are_ambiguous(tmp_path, mon
     global_extensions = tmp_path / "global-extensions"
     global_extensions.mkdir()
     _write_extension_manifest(global_extensions, name="git-helpers", enabled=False)
-    monkeypatch.setattr("minicode.product_surfaces.MINI_CODE_EXTENSIONS_DIR", global_extensions)
+    monkeypatch.setattr("minicode.integrations.product_surfaces.MINI_CODE_EXTENSIONS_DIR", global_extensions)
 
     result = try_handle_local_command("/extension-inspect git-helpers", cwd=str(workspace))
 

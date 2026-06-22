@@ -1,5 +1,5 @@
-from minicode.product_surfaces import build_readiness_report
-from minicode.product_surfaces import (
+from minicode.integrations.product_surfaces import build_readiness_report
+from minicode.integrations.product_surfaces import (
     DelegationStatus,
     HookStatus,
     InstructionLayer,
@@ -149,8 +149,8 @@ class TestExtensionManifests:
         }))
 
         # Monkey-patch extension_search_roots to include tmp_path
-        from minicode.product_surfaces import extension_search_roots as _original
-        import minicode.product_surfaces as ps
+        from minicode.integrations.product_surfaces import extension_search_roots as _original
+        import minicode.integrations.product_surfaces as ps
 
         original = ps.extension_search_roots
         try:

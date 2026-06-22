@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from minicode.prompt_pipeline import PromptPipeline, read_file_cached
-from minicode.product_surfaces import (
+from minicode.integrations.product_surfaces import (
     DelegationStatus,
     HookStatus,
     PromptBundle,

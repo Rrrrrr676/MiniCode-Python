@@ -1,4 +1,4 @@
-from minicode.runtime_profile_eval import (
+from minicode.runtime.profile_eval import (
     ProviderDiagnostic,
     RuntimeEvalCondition,
     RuntimeEvalScenario,

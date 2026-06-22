@@ -1,6 +1,6 @@
-from minicode.intent_parser import ActionType, IntentType, ParsedIntent
-from minicode.pipeline_engine import Step, StepExecutor, StepType
-from minicode.task_object import ConstraintType, TaskObject
+from minicode.runtime.intent import ActionType, IntentType, ParsedIntent
+from minicode.runtime.pipeline import Step, StepExecutor, StepType
+from minicode.runtime.tasks.object import ConstraintType, TaskObject
 from minicode.control.verification import (
     VerificationController,
     VerificationMode,

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
-from minicode.task_object import TaskObject, TaskState, ConstraintType
+from minicode.runtime.tasks.object import TaskObject, TaskState, ConstraintType
 from minicode.control.supervisor import CyberneticSupervisor
 from minicode.observability.decision_audit import get_auditor, DecisionType, DecisionOutcome
 from minicode.observability.logging import get_logger
@@ -439,8 +439,8 @@ def get_pipeline_engine() -> PipelineEngine:
 
 
 def process_task(raw_input: str) -> tuple[TaskObject, PipelinePlan, PipelineResult]:
-    from minicode.intent_parser import parse_intent
-    from minicode.task_object import build_task
+    from minicode.runtime.intent import parse_intent
+    from minicode.runtime.tasks.object import build_task
 
     intent = parse_intent(raw_input)
     task = build_task(intent, raw_input)

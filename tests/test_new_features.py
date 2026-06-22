@@ -32,7 +32,7 @@ from minicode.memory import (
     MemoryScope,
     inject_memory_into_prompt,
 )
-from minicode.task_tracker import (
+from minicode.runtime.tasks.tracker import (
     Task,
     TaskList,
     TaskManager,

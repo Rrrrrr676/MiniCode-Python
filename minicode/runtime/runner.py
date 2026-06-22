@@ -23,18 +23,18 @@ from minicode.hooks import HookEvent, fire_hook_sync
 
 # Intelligence integration
 from minicode.observability.metrics import AgentMetricsCollector
-from minicode.agent_intelligence import ErrorClassifier, NudgeGenerator, ToolScheduler
+from minicode.runtime.intelligence import ErrorClassifier, NudgeGenerator, ToolScheduler
 from minicode.working_memory import get_working_memory, protect_context
 
 # Work chain integration
-from minicode.intent_parser import parse_intent
-from minicode.task_object import build_task, TaskObject, TaskState
-from minicode.task_graph import TaskGraph, TaskState as GraphTaskState
-from minicode.pipeline_engine import get_pipeline_engine
-from minicode.capability_registry import get_registry, CapabilityDomain
+from minicode.runtime.intent import parse_intent
+from minicode.runtime.tasks.object import build_task, TaskObject, TaskState
+from minicode.runtime.tasks.graph import TaskGraph, TaskState as GraphTaskState
+from minicode.runtime.pipeline import get_pipeline_engine
+from minicode.runtime.capabilities import get_registry, CapabilityDomain
 from minicode.layered_context import ContextBuilder, LayeredContext
 from minicode.observability.decision_audit import get_auditor, DecisionOutcome
-from minicode.runtime_profiles import resolve_runtime_profile
+from minicode.runtime.profiles import resolve_runtime_profile
 
 # 工程控制论集成
 from minicode.control.orchestrator import CyberneticOrchestrator
@@ -53,7 +53,8 @@ from minicode.memory_injector import MemoryInjectionSignal, MemoryInjector
 from minicode.providers.registry import ModelSelectionSignal
 
 # 智能路由与自省 (Phase 3 导入)
-from minicode.smart_router import TaskOutcome
+from minicode.runtime.smart_routing import SmartRouter, TaskOutcome
+from minicode.memory.reflection import ReflectionEngine
 
 # 上下文管理集成 (Claude Code-style + Engineering Cybernetics)
 from minicode.context_compactor import (
@@ -65,7 +66,7 @@ from minicode.control.cost import CostControlLoop
 from minicode.micro_compact import MicroCompactor
 from minicode.circuit_breaker import CompactionCircuitBreaker
 from minicode.memory import MemoryManager
-from minicode.turn_kernel import (
+from minicode.runtime.kernel import (
     TurnPreludeState,
     TurnRecurrentState,
     TurnVerificationState,
@@ -200,7 +201,7 @@ def _register_tool_capabilities(tools: ToolRegistry) -> None:
         return
     for tool_name in tools.list_all():
         try:
-            from minicode.capability_registry import CapabilityMetadata, CapabilityScope
+            from minicode.runtime.capabilities import CapabilityMetadata, CapabilityScope
             tool_def = tools.find(tool_name)
             if not tool_def:
                 continue
@@ -493,7 +494,13 @@ def run_agent_turn(
 
         # 初始化所有工程控制论控制器（通过 Orchestrator 统一管理）
         orch = CyberneticOrchestrator()
-        orch.initialize(model, tools, runtime)
+        orch.initialize(
+            model,
+            tools,
+            runtime,
+            smart_router=SmartRouter(),
+            reflection=ReflectionEngine(memory_manager=None),
+        )
         feedback_controller = orch.feedback
         cybernetic_supervisor = orch.cyber_supervisor
         stability_monitor = orch.stability

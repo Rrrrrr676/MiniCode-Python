@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
-from minicode.intent_parser import ParsedIntent, IntentType, ActionType
+from minicode.core.intent import ActionType, IntentType, ParsedIntent
 
 class PreemptionLevel(Enum):
     NONE = "none"
