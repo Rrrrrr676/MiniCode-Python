@@ -1,4 +1,6 @@
 import minicode.config as config_module
+import minicode.config.diagnostics as diagnostics_module
+import minicode.config.settings as settings_module
 from minicode.config import (
     describe_fallback_guidance,
     default_model_fallbacks,
@@ -73,7 +75,7 @@ def test_validate_provider_runtime_accepts_gpt55_openai_compatible() -> None:
 
 def test_load_runtime_config_includes_runtime_profile(monkeypatch) -> None:
     monkeypatch.setattr(
-        config_module,
+        settings_module,
         "load_effective_settings",
         lambda cwd=None: {
             "model": "anthropic/claude-sonnet-4",
@@ -93,7 +95,7 @@ def test_load_runtime_config_includes_runtime_profile(monkeypatch) -> None:
 
 def test_load_runtime_config_includes_anthropic_family_defaults(monkeypatch) -> None:
     monkeypatch.setattr(
-        config_module,
+        settings_module,
         "load_effective_settings",
         lambda cwd=None: {
             "model": "deepseek-v4-pro[1m]",
@@ -122,7 +124,7 @@ def test_load_runtime_config_includes_anthropic_family_defaults(monkeypatch) -> 
 
 def test_load_runtime_config_prefers_settings_env_for_anthropic_runtime(monkeypatch) -> None:
     monkeypatch.setattr(
-        config_module,
+        settings_module,
         "load_effective_settings",
         lambda cwd=None: {
             "model": "gpt5.5",
@@ -156,7 +158,7 @@ def test_load_runtime_config_prefers_settings_env_for_anthropic_runtime(monkeypa
 
 def test_load_runtime_config_prefers_settings_env_for_openai_runtime(monkeypatch) -> None:
     monkeypatch.setattr(
-        config_module,
+        settings_module,
         "load_effective_settings",
         lambda cwd=None: {
             "model": "gpt5.5",
@@ -181,7 +183,7 @@ def test_load_runtime_config_prefers_settings_env_for_openai_runtime(monkeypatch
 
 def test_load_runtime_config_preserves_mini_code_model_override(monkeypatch) -> None:
     monkeypatch.setattr(
-        config_module,
+        settings_module,
         "load_effective_settings",
         lambda cwd=None: {
             "model": "gpt5.5",
@@ -201,7 +203,7 @@ def test_load_runtime_config_preserves_mini_code_model_override(monkeypatch) -> 
 
 def test_load_runtime_config_includes_structured_fallback_models(monkeypatch) -> None:
     monkeypatch.setattr(
-        config_module,
+        settings_module,
         "load_effective_settings",
         lambda cwd=None: {
             "model": "claude-sonnet-4-20250514",
@@ -258,12 +260,12 @@ def test_effective_model_fallbacks_prefer_explicit_before_defaults() -> None:
 
 def test_format_config_diagnostic_scopes_openai_provider_details(monkeypatch) -> None:
     monkeypatch.setattr(
-        config_module,
+        diagnostics_module,
         "validate_config",
         lambda cwd=None: (True, []),
     )
     monkeypatch.setattr(
-        config_module,
+        diagnostics_module,
         "load_runtime_config",
         lambda cwd=None: {
             "model": "gpt5.5",
@@ -318,7 +320,7 @@ def test_describe_fallback_guidance_prefers_provider_exposed_models_when_default
 
 def test_load_runtime_config_falls_back_to_model_for_missing_anthropic_family_defaults(monkeypatch) -> None:
     monkeypatch.setattr(
-        config_module,
+        settings_module,
         "load_effective_settings",
         lambda cwd=None: {
             "model": "deepseek-v4-pro[1m]",
