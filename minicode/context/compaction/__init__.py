@@ -1,37 +1,20 @@
 """Context compaction policies and implementations."""
 
-from minicode.context.compaction.dispatcher import (
+from .budgets import ToolResultBudgetManager
+from .dispatcher import AutoCompactDispatcher
+from .micro import MicrocompactEngine, ReadDedupManager
+from .models import (
     AutoCompactConfig,
-    AutoCompactDispatcher,
     CompactBoundary,
     CompactStrategy,
     CompactTrigger,
     CompactionResult,
-    ContextCompactor,
-    MicrocompactEngine,
     MicrocompactState,
-    ReactiveCompactEngine,
     ReadDedupEntry,
-    ReadDedupManager,
-    SessionMemoryCompactEngine,
-    ToolResultBudgetManager,
     ToolResultPersisted,
 )
+from .reactive import ReactiveCompactEngine
+from .service import ContextCompactor
+from .session_memory import SessionMemoryCompactEngine
 
-__all__ = [
-    "AutoCompactConfig",
-    "AutoCompactDispatcher",
-    "CompactBoundary",
-    "CompactStrategy",
-    "CompactTrigger",
-    "CompactionResult",
-    "ContextCompactor",
-    "MicrocompactEngine",
-    "MicrocompactState",
-    "ReactiveCompactEngine",
-    "ReadDedupEntry",
-    "ReadDedupManager",
-    "SessionMemoryCompactEngine",
-    "ToolResultBudgetManager",
-    "ToolResultPersisted",
-]
+__all__ = [name for name in globals() if not name.startswith("_")]
