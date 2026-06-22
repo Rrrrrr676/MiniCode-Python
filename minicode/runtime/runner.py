@@ -95,6 +95,17 @@ from minicode.runtime.model_execution import (
 from minicode.runtime.policy import is_at_blocking_limit as _is_at_blocking_limit
 from minicode.runtime.tool_execution import execute_single_tool as _execute_single_tool
 
+from minicode.runtime.prelude import (
+    _build_layered_context,
+    _build_work_chain_task,
+    _register_tool_capabilities,
+)
+from minicode.runtime.control_runtime import _apply_control_signal
+
+from minicode.runtime.coda import finalize_turn_coda
+
+from minicode.runtime.composition import compose_runtime
+
 logger = get_logger("runtime.runner")
 
 # 甯搁噺锛氶伩鍏嶉噸澶嶇殑鎻愮ず鏂囨湰
@@ -133,245 +144,14 @@ RESUME_AFTER_MAX_TOKENS = (
 )
 
 
-def _extract_task_description(messages: list[ChatMessage]) -> str:
-    """Extract the original task description from messages."""
-    for msg in messages:
-        if msg.get("role") == "user" and msg.get("content"):
-            content = str(msg["content"])
-            if not content.startswith("Continue") and not content.startswith("Your last"):
-                return content[:500]
-    return "Unknown task"
 
 
-def _build_work_chain_task(messages: list[ChatMessage]) -> tuple[TaskObject | None, dict]:
-    """Build TaskObject from conversation messages and return it with metadata."""
-    raw_input = _extract_task_description(messages)
-    if raw_input == "Unknown task":
-        return None, {}
-    intent = parse_intent(raw_input)
-    task = build_task(intent, raw_input)
-    metadata = {
-        "intent_type": intent.intent_type.value,
-        "action_type": intent.action_type.value,
-        "confidence": intent.confidence,
-        "entities": intent.entities,
-        "complexity": intent.complexity_hint,
-    }
-    logger.info(
-        "Work chain: intent=%s action=%s confidence=%.2f complexity=%s",
-        intent.intent_type.value, intent.action_type.value,
-        intent.confidence, intent.complexity_hint,
-    )
-    return task, metadata
 
 
-def _build_layered_context(
-    messages: list[ChatMessage],
-    system_prompt: str = "",
-    project_context: str = "",
-    task: TaskObject | None = None,
-) -> tuple[LayeredContext, ContextBuilder]:
-    """Build layered context from conversation and task."""
-    context = LayeredContext()
-    builder = ContextBuilder(context)
-    if system_prompt:
-        builder.set_system_prompt(system_prompt)
-    if project_context:
-        builder.add_project_memory(project_context)
-    for msg in messages:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-        if content:
-            builder.add_session_message(role, content)
-    if task:
-        scratchpad = (
-            f"Task: {task.title}\n"
-            f"Goal: {task.goal}\n"
-            f"Constraints: {len(task.constraints)}\n"
-            f"Expected outputs: {len(task.expected_outputs)}"
-        )
-        builder.add_scratchpad(scratchpad)
-    return context, builder
 
 
-def _register_tool_capabilities(tools: ToolRegistry) -> None:
-    """Register existing tools as capabilities in the registry."""
-    registry = get_registry()
-    if registry.list_all():
-        return
-    for tool_name in tools.list_all():
-        try:
-            from minicode.runtime.capabilities import CapabilityMetadata, CapabilityScope
-            tool_def = tools.find(tool_name)
-            if not tool_def:
-                continue
-            domain = CapabilityDomain.UNKNOWN
-            if "file" in tool_name or "write" in tool_name or "read" in tool_name:
-                domain = CapabilityDomain.FILE
-            elif "search" in tool_name or "grep" in tool_name:
-                domain = CapabilityDomain.SEARCH
-            elif "web" in tool_name or "http" in tool_name or "fetch" in tool_name:
-                domain = CapabilityDomain.WEB
-            elif "command" in tool_name or "run" in tool_name or "exec" in tool_name:
-                domain = CapabilityDomain.EXECUTION
-            elif "code" in tool_name or "diff" in tool_name or "review" in tool_name:
-                domain = CapabilityDomain.CODE
-            elif "memory" in tool_name:
-                domain = CapabilityDomain.MEMORY
-            scope = CapabilityScope.READONLY
-            if any(k in tool_name for k in ("write", "modify", "edit", "delete", "create")):
-                scope = CapabilityScope.WRITE
-            if any(k in tool_name for k in ("command", "exec", "run")):
-                scope = CapabilityScope.DESTRUCTIVE
-            if any(k in tool_name for k in ("web", "fetch", "http")):
-                scope = CapabilityScope.EXTERNAL
-            metadata = CapabilityMetadata(
-                name=tool_name, domain=domain, scope=scope,
-                description=tool_def.description or f"Tool: {tool_name}",
-                tags=["tool", tool_name],
-            )
-            registry.register(metadata, lambda **kw: tools.execute(tool_name, kw, ToolContext()), None)
-        except Exception as e:
-            logger.debug("Failed to register tool %s as capability: %s", tool_name, e)
 
 
-def _apply_control_signal(
-    *,
-    control_signal: Any,
-    system_state: Any,
-    max_steps: int | None,
-    tool_scheduler: ToolScheduler,
-    context_compactor: ContextCompactor | None,
-    model_switcher: Any | None,
-    feedback_controller: Any | None = None,
-) -> int | None:
-    """Apply FeedbackController output to live runtime knobs."""
-    if not control_signal or control_signal.confidence <= 0.6:
-        return max_steps
-
-    if (
-        control_signal.limit_max_steps
-        and max_steps is not None
-        and control_signal.limit_max_steps < max_steps
-    ):
-        logger.info(
-            "FeedbackController: limiting max_steps %d -> %d",
-            max_steps, control_signal.limit_max_steps,
-        )
-        max_steps = control_signal.limit_max_steps
-
-    if control_signal.adjust_token_budget != 1.0:
-        if (
-            context_compactor
-            and hasattr(context_compactor, "_tool_budget")
-            and context_compactor._tool_budget
-        ):
-            new_budget = max(
-                1000,
-                int(
-                    context_compactor._tool_budget.budget_per_message
-                    * control_signal.adjust_token_budget
-                ),
-            )
-            context_compactor._tool_budget.budget_per_message = new_budget
-            logger.info(
-                "FeedbackController: token budget adjusted to %d (mult=%.2f)",
-                new_budget, control_signal.adjust_token_budget,
-            )
-
-    if control_signal.reduce_parallelism:
-        tool_scheduler._force_max_workers = min(
-            getattr(tool_scheduler, "_force_max_workers", 2) or 2,
-            2,
-        )
-        logger.info(
-            "FeedbackController: reduce_parallelism -> max_workers=2 "
-            "(oscillation=%.2f)",
-            control_signal.oscillation_index,
-        )
-
-    if control_signal.adjust_concurrency != 0:
-        cap = max(1, 4 + control_signal.adjust_concurrency)
-        tool_scheduler._force_max_workers = cap
-        logger.info(
-            "FeedbackController: adjust_concurrency=%+d -> max_workers=%d",
-            control_signal.adjust_concurrency, cap,
-        )
-
-    if control_signal.increase_model_level:
-        logger.info(
-            "FeedbackController: model upgrade recommended (errors=%.2f perf=%.2f)",
-            system_state.error_frequency,
-            system_state.performance_score(),
-        )
-        if model_switcher:
-            model_switcher._pending_upgrade = True
-
-    if control_signal.decrease_model_level:
-        logger.info(
-            "FeedbackController: model downgrade recommended (efficiency=%.2f)",
-            system_state.token_efficiency,
-        )
-
-    if control_signal.suggest_memory_persistence:
-        logger.info("FeedbackController: persisting working memory")
-        if context_compactor and hasattr(context_compactor, "_tool_budget"):
-            try:
-                context_compactor._tool_budget.flush()
-            except Exception:
-                pass
-
-    if control_signal.recommend_skill_update:
-        logger.info(
-            "FeedbackController: skill update recommended (pattern=%.2f)",
-            system_state.pattern_reuse_rate,
-        )
-        # Queue skill update for next maintenance cycle
-        if not hasattr(tool_scheduler, '_pending_skill_update'):
-            tool_scheduler._pending_skill_update = True
-        logger.info("FeedbackController: skill update queued for next maintenance cycle")
-
-    if control_signal.reduce_tool_timeout:
-        new_timeout = max(5.0, control_signal.reduce_tool_timeout)
-        tool_scheduler._force_tool_timeout = new_timeout
-        logger.info(
-            "FeedbackController: tool timeout reduced to %.1fs (high error rate)",
-            new_timeout,
-        )
-    elif hasattr(tool_scheduler, '_force_tool_timeout'):
-        # Reset timeout when signal no longer active
-        del tool_scheduler._force_tool_timeout
-
-    if control_signal.increase_nudge_frequency:
-        tool_scheduler._force_nudge_frequency = True
-        logger.info(
-            "FeedbackController: nudge frequency increased (stability=%.2f)",
-            system_state.stability_score(),
-        )
-    elif hasattr(tool_scheduler, '_force_nudge_frequency'):
-        del tool_scheduler._force_nudge_frequency
-
-    if control_signal.promote_pattern:
-        if feedback_controller:
-            feedback_controller.record_pattern_effectiveness(
-                control_signal.promote_pattern, True
-            )
-            logger.info(
-                "FeedbackController: pattern promoted '%s'",
-                control_signal.promote_pattern,
-            )
-
-    if control_signal.force_compaction and context_compactor:
-        try:
-            compacted = context_compactor.compact_messages()
-            logger.info(
-                "FeedbackController: forced compaction completed (%d messages)",
-                len(compacted) if compacted else 0,
-            )
-        except Exception as exc:
-            logger.warning("FeedbackController: forced compaction failed: %s", exc)
-
-    return max_steps
 
 
 def run_agent_turn(
@@ -452,376 +232,47 @@ def run_agent_turn(
 
     tool_scheduler = ToolScheduler(metrics_collector=metrics_collector)
 
-    prelude = TurnPreludeState(auditor=get_auditor() if enable_work_chain else None)
-
-    # 工程控制论控制器初始化（通过 Orchestrator 统一管理）
-    orch: CyberneticOrchestrator | None = None
-    feedback_controller: Any = None
-    feedforward_controller: Any = None
-    stability_monitor: Any = None
-    cybernetic_supervisor: Any = None
-
-    adaptive_pid_tuner: Any = None
-    state_observer: Any = None
-    decoupling_controller: Any = None
-    predictive_controller: Any = None
-    self_healing_engine: Any = None
-    progress_controller: Any = None
-    memory_injection_ctrl: Any = None
-    model_selection_ctrl: Any = None
-    smart_router: Any = None
-    reflection_engine: Any = None
-    model_switcher: Any = None
-    memory_injector: Any = None
-
-    if enable_work_chain:
-        prelude.task, prelude.task_metadata = _build_work_chain_task(current_messages)
-        if prelude.task:
-            prelude.task_graph = TaskGraph(name=f"turn-{prelude.task.id}")
-            graph_task = prelude.task_graph.add_task(
-                name=prelude.task.title or prelude.task.id,
-                description=prelude.task.goal or prelude.task.description,
-            )
-            prelude.task_graph_id = graph_task.id
-            slot = prelude.task_graph.assign_slot(graph_task.id, slot_name="turn")
-            prelude.task_slot_key = f"{slot.slot_name}:{slot.task_id}"
-            prelude.task_graph.start_task(prelude.task_slot_key)
-        prelude.layered_context, prelude.context_builder = _build_layered_context(
-            current_messages, system_prompt, project_context, prelude.task,
-        )
-        get_pipeline_engine()
-        _register_tool_capabilities(tools)
-
-        # 初始化所有工程控制论控制器（通过 Orchestrator 统一管理）
-        orch = CyberneticOrchestrator()
-        orch.initialize(
-            model,
-            tools,
-            runtime,
-            smart_router=SmartRouter(),
-            reflection=ReflectionEngine(memory_manager=None),
-        )
-        feedback_controller = orch.feedback
-        cybernetic_supervisor = orch.cyber_supervisor
-        stability_monitor = orch.stability
-        adaptive_pid_tuner = orch.adaptive_tuner
-        state_observer = orch.state_observer
-        decoupling_controller = orch.decoupling
-        predictive_controller = orch.predictive
-        progress_controller = orch.progress
-        memory_injection_ctrl = orch.memory_ctrl
-        model_selection_ctrl = orch.model_ctrl
-        smart_router = orch.smart_router
-        reflection_engine = orch.reflection
-        model_switcher = orch.model_switcher
-        logger.info("CyberneticOrchestrator: %d controllers initialized", 15)
-        if smart_router and prelude.task:
-            try:
-                current_model_id = model.model_id if hasattr(model, 'model_id') else ""
-                task_text = prelude.task.raw_input if hasattr(prelude.task, 'raw_input') else str(current_messages[-1].get('content', ''))
-                routing, switch_result = smart_router.route_and_switch(
-                    task_text,
-                    current_model=current_model_id,
-                )
-                logger.info(
-                    "SmartRouter: model=%s tier=%s cost=$%.4f reason=%s",
-                    routing.selected_model, routing.tier_name,
-                    routing.estimated_cost, routing.reasoning[:80],
-                )
-                # 如果路由推荐了不同模型且切换成功，更新 model 引用
-                if switch_result and switch_result.success:
-                    model = switch_result.adapter
-                    logger.info(
-                        "SmartRouter: switched model %s -> %s",
-                        switch_result.old_model, switch_result.new_model,
-                    )
-            except Exception:
-                pass
-
-        # 初始化前馈控制器（预判式优化）
-        if prelude.task:
-            feedforward_controller = FeedforwardController()
-            preemptive_config = feedforward_controller.preconfigure(prelude.task.parsed_intent, prelude.task.raw_input)
-            risk_assessment = feedforward_controller.assess_risks(prelude.task.parsed_intent, preemptive_config)
-            logger.info(
-                "Feedforward control: config=%s risk=%s",
-                preemptive_config.recommended_model, risk_assessment.risk_level,
-            )
-            # Apply feedforward preemptive config to execution parameters
-            if preemptive_config.confidence > 0.6:
-                if turn_state.max_steps is None:
-                    turn_state.max_steps = preemptive_config.max_turn_steps
-                else:
-                    turn_state.max_steps = min(
-                        turn_state.max_steps,
-                        preemptive_config.max_turn_steps,
-                    )
-                max_steps = turn_state.max_steps
-                logger.info(
-                    "Feedforward: max_steps=%d model=%s timeout=%.1fs",
-                    preemptive_config.max_turn_steps,
-                    preemptive_config.recommended_model,
-                    preemptive_config.tool_timeout_seconds,
-                )
-            if risk_assessment.risk_level in ("high", "critical"):
-                logger.warning(
-                    "Feedforward risk assessment: level=%s probability=%.2f risks=%s",
-                    risk_assessment.risk_level,
-                    risk_assessment.estimated_failure_probability,
-                    ", ".join(risk_assessment.identified_risks[:3]),
-                )
-
-        # 模型选择控制器：根据任务特征推荐模型
-        if model_selection_ctrl and prelude.task:
-            try:
-                model_signal = ModelSelectionSignal(
-                    task_complexity=getattr(prelude.task, 'complexity', 'moderate') if hasattr(prelude.task, 'complexity') else "moderate",
-                    budget_pressure=0.3,
-                    latency_pressure=0.3,
-                    recent_failures=0,
-                    current_model=model.model_id if hasattr(model, 'model_id') else "",
-                )
-                model_decision = model_selection_ctrl.decide(model_signal)
-                logger.info(
-                    "ModelSelectionController: model=%s score=%.2f effort=%s reasons=%s",
-                    model_decision.model, model_decision.score,
-                    model_decision.reasoning_effort.value,
-                    ", ".join(model_decision.reasons),
-                )
-            except Exception:
-                pass
-
-        # 初始化上下文管理器 (Claude Code-style + Engineering Cybernetics)
-        # 必须在 SelfHealingEngine 之前初始化，因为自愈引擎需要委托压缩操作
-        context_compactor: ContextCompactor | None = None
-        context_cybernetics: ContextCyberneticsOrchestrator | None = None
-        memory_mgr: MemoryManager | None = None
-        if context_manager:
-            compact_config = AutoCompactConfig(
-                threshold_ratio=0.85,
-                circuit_breaker_limit=3,
-                session_memory_enabled=True,
-            )
-            memory_mgr = MemoryManager(project_root=cwd)
-            # 将 memory_mgr 注入 ReflectionEngine，使自省经验持久化
-            if reflection_engine:
-                reflection_engine.memory = memory_mgr
-            # 初始化 MemoryInjector，将控制论决策落地为实际记忆注入
-            # 同时创建 Reranker（使用真实 LLM 做记忆策展）
-            memory_reranker = None
-            try:
-                from minicode.memory.reranker import MemoryReranker
-                # Use the agent's model for reranking (lightweight prompt, ~500 tokens)
-                memory_reranker = MemoryReranker(model_adapter=model)
-            except Exception:
-                pass
-            memory_injector = MemoryInjector(
-                memory_manager=memory_mgr,
-                controller=memory_injection_ctrl,
-                reranker=memory_reranker,
-            )
-            if orch:
-                orch._last_model = model
-                orch._workspace = cwd
-                orch.wire_memory(memory_mgr)
-                if orch.memory_pipeline is not None:
-                    memory_injector = getattr(orch.memory_pipeline, "_injector", memory_injector)
-            # 记忆注入控制器：根据上下文压力决定注入策略
-            if memory_injection_ctrl:
-                try:
-                    inj_signal = MemoryInjectionSignal(
-                        context_usage=context_manager.get_stats().usage_percentage / 100.0,
-                        retrieval_quality=0.5,
-                        recent_failure=False,
-                    )
-                    inj_decision = memory_injection_ctrl.decide(
-                        inj_signal,
-                        base_max_memories=5,
-                        base_min_relevance=0.3,
-                        base_max_tokens=200,
-                    )
-                    logger.info(
-                        "MemoryInjectionController: mode=%s max_mem=%d min_rel=%.2f max_tok=%d",
-                        inj_decision.mode.value, inj_decision.max_memories,
-                        inj_decision.min_relevance, inj_decision.max_tokens_per_memory,
-                    )
-                except Exception:
-                    pass
-            # 执行实际记忆注入：将相关记忆注入到系统 prompt 中
-            if orch and prelude.task:
-                try:
-                    task_desc = prelude.task.raw_input if hasattr(prelude.task, 'raw_input') else ""
-                    current_messages = orch.inject_memories(task_desc, current_messages)
-                except Exception:
-                    pass
-            elif memory_injector and prelude.task:
-                try:
-                    task_desc = prelude.task.raw_input if hasattr(prelude.task, 'raw_input') else ""
-                    injected = memory_injector.inject_for_task(task_desc)
-                    if injected:
-                        logger.info(
-                            "MemoryInjector: injected %d memories (mode=%s)",
-                            len(injected),
-                            memory_injector._last_decision.mode.value if memory_injector._last_decision else "?",
-                        )
-                        # 将注入的记忆追加到系统 prompt
-                        memory_context = "\n## Injected Memory\n" + "\n".join(
-                            f"- {m.content[:200]}" for m in injected[:5]
-                        )
-                        for i, msg in enumerate(current_messages):
-                            if msg.get("role") == "system":
-                                current_messages[i] = {
-                                    **msg,
-                                    "content": msg["content"] + memory_context,
-                                }
-                                break
-                except Exception:
-                    pass
-            context_compactor = ContextCompactor(
-                context_window=context_manager.context_window,
-                workspace=cwd,
-                memory_manager=memory_mgr,
-                estimate_fn=estimate_message_tokens,
-                config=compact_config,
-            )
-            context_cybernetics = ContextCyberneticsOrchestrator(
-                context_compactor,
-                kp=2.0, ki=0.15, kd=0.3,
-                pid_setpoint=0.70,
-                base_threshold=0.85,
-                safety_margin_turns=3,
-                enabled=True,
-            )
-            if prelude.task and hasattr(prelude.task, 'parsed_intent') and prelude.task.parsed_intent:
-                context_cybernetics.set_intent(str(prelude.task.parsed_intent.intent_type))
-            logger.info("ContextCybernetics initialized: PID control loop + predictive guard")
-            if orch:
-                orch.context_compactor = context_compactor
-                orch.context_cybernetics = context_cybernetics
-
-        # 初始化自愈引擎（接收 cybernetics 引用用于 CONTEXT_OVERFLOW 委托）
-        if orch:
-            orch.wire_healing(tool_scheduler, context_compactor)
-            self_healing_engine = orch.healing
-        else:
-            self_healing_engine = SelfHealingEngine(
-                orchestrator=context_cybernetics,
-                tool_scheduler=tool_scheduler,
-                compactor=context_compactor,
-            )
-        logger.info("Self-healing engine initialized: automated recovery + compaction delegation")
-
-        # ── Micro-compaction + circuit breaker (CC-style layered defense) ─────
-        micro_compactor = MicroCompactor()
-        compaction_breaker = CompactionCircuitBreaker()
-        logger.info("Micro-compactor + circuit breaker initialized for layered context defense")
-
-        # 初始化成本控制闭环 (CostTracker → PID → ToolResultBudgetManager)
-        cost_control = orch.cost_control if orch else None
-        if cost_control is None:
-            cost_control = CostControlLoop(
-                target_cost_per_min=0.50,
-                kp=1.5, ki=0.08, kd=0.2,
-                enabled=True,
-            )
-        if orch:
-            orch.cost_control = cost_control
-        logger.info("CostControlLoop initialized: BudgetPIDController for cost regulation")
-
-    # 检查上下文状态 + 运行 Claude Code-style 预请求优化管线
-    if context_manager:
-        context_manager.messages = current_messages
-        stats = context_manager.get_stats()
-        logger.info("Context: %d tokens (%.0f%%), %d messages",
-                   stats.total_tokens, stats.usage_percentage, stats.messages_count)
-
-        # ── Layer 1: Micro-compaction (lightest defense) ───────────────────
-        current_messages, mc_stats = micro_compactor.compact(current_messages)
-        if mc_stats.reason != "no_action":
-            context_manager.messages = current_messages
-            logger.info(
-                "MicroCompact: %s — %d → %d messages",
-                mc_stats.reason,
-                mc_stats.messages_before,
-                mc_stats.messages_after,
-            )
-
-        # 运行控制论闭环优化管线 (Sense → Predict → Control → Act → Learn)
-        if context_cybernetics:
-            if cost_control:
-                est_cost = stats.total_tokens * 0.000015
-                adj = cost_control.run(
-                    cost_usd=est_cost,
-                    total_tokens=stats.total_tokens,
-                    total_calls=max(turn_state.step, 1),
-                )
-                if context_compactor and hasattr(context_compactor, '_tool_budget') and context_compactor._tool_budget:
-                    cost_control.apply_to_budget_manager(context_compactor._tool_budget)
-                elif adj and adj.budget_multiplier < 0.8:
-                    logger.warning(
-                        "CostControl: budget tightened (mult=%.2f reason=%s) but no compactor active",
-                        adj.budget_multiplier, adj.reason,
-                    )
-
-            if compaction_breaker.is_allowed():
-                try:
-                    cyber_messages, cyber_result, cyber_action = context_cybernetics.run_cycle(
-                        current_messages,
-                        error_rate=float(turn_state.tool_error_count) / max(turn_state.step, 1) if turn_state.step > 0 else 0.0,
-                        avg_latency=turn_state.step * 2.0,
-                        turn_id=turn_state.step,
-                    )
-                except Exception as exc:
-                    compaction_breaker.record_failure()
-                    logger.warning("Cybernetics compaction raised: %s", exc)
-                    cyber_result = None
-                if cyber_result and cyber_result.effective:
-                    compaction_breaker.record_success()
-                    current_messages = cyber_messages
-                    context_manager.messages = current_messages
-                    logger.info(
-                        "Cybernetics[%s]: %s intensity=%.2f freed=%d tokens [%s]",
-                        cyber_action.reason if cyber_action else "unknown",
-                        cyber_result.strategy.value,
-                        cyber_action.compaction_intensity if cyber_action else 0,
-                        cyber_result.tokens_freed,
-                        cyber_result.summary_text[:80] if cyber_result.summary_text else "",
-                    )
-            else:
-                logger.warning("Cybernetics compaction blocked by circuit breaker")
-        elif context_compactor:
-            if compaction_breaker.is_allowed():
-                try:
-                    compaction_result = context_compactor.process_request(current_messages)
-                except Exception as exc:
-                    compaction_breaker.record_failure()
-                    logger.warning("Compactor raised: %s", exc)
-                    compaction_result = None
-                if compaction_result and compaction_result.effective:
-                    compaction_breaker.record_success()
-                    current_messages = compaction_result.messages
-                    context_manager.messages = current_messages
-                    logger.info(
-                        "ContextCompactor: %s freed %d tokens [%s]",
-                        compaction_result.strategy.value,
-                        compaction_result.tokens_freed,
-                        compaction_result.summary_text[:80],
-                    )
-            else:
-                logger.warning("Compactor blocked by circuit breaker")
-        elif context_manager.should_auto_compact():
-            if compaction_breaker.is_allowed():
-                try:
-                    logger.warning("Context near limit, auto-compacting...")
-                    current_messages = context_manager.compact_messages()
-                    compaction_breaker.record_success()
-                except Exception as exc:
-                    compaction_breaker.record_failure()
-                    logger.warning("Auto-compact failed: %s", exc)
-                if on_assistant_message:
-                    on_assistant_message(context_manager.get_context_summary())
-            else:
-                logger.warning("Auto-compact blocked by circuit breaker")
+    composition = compose_runtime(
+        model=model,
+        tools=tools,
+        current_messages=current_messages,
+        cwd=cwd,
+        runtime=runtime,
+        enable_work_chain=enable_work_chain,
+        system_prompt=system_prompt,
+        project_context=project_context,
+        context_manager=context_manager,
+        tool_scheduler=tool_scheduler,
+        turn_state=turn_state,
+        on_assistant_message=on_assistant_message,
+    )
+    model = composition.model
+    current_messages = composition.current_messages
+    max_steps = composition.max_steps
+    prelude = composition.prelude
+    orch = composition.orch
+    feedback_controller = composition.feedback_controller
+    feedforward_controller = composition.feedforward_controller
+    stability_monitor = composition.stability_monitor
+    cybernetic_supervisor = composition.cybernetic_supervisor
+    adaptive_pid_tuner = composition.adaptive_pid_tuner
+    state_observer = composition.state_observer
+    decoupling_controller = composition.decoupling_controller
+    predictive_controller = composition.predictive_controller
+    self_healing_engine = composition.self_healing_engine
+    progress_controller = composition.progress_controller
+    memory_injection_ctrl = composition.memory_injection_ctrl
+    model_selection_ctrl = composition.model_selection_ctrl
+    smart_router = composition.smart_router
+    reflection_engine = composition.reflection_engine
+    model_switcher = composition.model_switcher
+    memory_injector = composition.memory_injector
+    context_compactor = composition.context_compactor
+    context_cybernetics = composition.context_cybernetics
+    memory_mgr = composition.memory_mgr
+    micro_compactor = composition.micro_compactor
+    compaction_breaker = composition.compaction_breaker
+    cost_control = composition.cost_control
 
     try:
         # Recurrent kernel: repeated think/act/observe iterations over one turn.
@@ -1644,416 +1095,31 @@ def run_agent_turn(
         return current_messages
     finally:
         # Coda: finalize metrics, work-chain bookkeeping, and control summaries.
-        fire_hook_sync(
-            HookEvent.AGENT_STOP,
-            step=turn_state.step,
-            tool_errors=turn_state.tool_error_count,
-        )
-        step = turn_state.step
-        if metrics_collector and metrics_collector._current_turn is not None:
-            total_tokens = sum(
-                estimate_message_tokens(m) for m in current_messages
-            ) if context_manager else 0
-            metrics_collector.end_turn(total_tokens=total_tokens)
-
-        context_usage = 0.0
-        if context_manager:
-            try:
-                context_usage = context_manager.get_stats().usage_percentage / 100.0
-            except Exception:
-                context_usage = 0.0
-        coda_summary = build_turn_coda_summary(
+        finalize_turn_coda(
             turn_state=turn_state,
-            context_usage=context_usage,
+            metrics_collector=metrics_collector,
+            current_messages=current_messages,
+            context_manager=context_manager,
+            enable_work_chain=enable_work_chain,
+            prelude=prelude,
+            orch=orch,
+            reflection_engine=reflection_engine,
+            memory_injector=memory_injector,
+            memory_mgr=memory_mgr,
+            smart_router=smart_router,
+            model=model,
+            model_switcher=model_switcher,
+            feedback_controller=feedback_controller,
+            stability_monitor=stability_monitor,
+            state_observer=state_observer,
+            context_cybernetics=context_cybernetics,
+            predictive_controller=predictive_controller,
+            self_healing_engine=self_healing_engine,
+            decoupling_controller=decoupling_controller,
+            context_compactor=context_compactor,
+            cost_control=cost_control,
+            tool_scheduler=tool_scheduler,
+            adaptive_pid_tuner=adaptive_pid_tuner,
+            cybernetic_supervisor=cybernetic_supervisor,
+            max_steps=max_steps,
         )
-
-        if enable_work_chain and prelude.task:
-            finalize_work_chain_task(
-                task=prelude.task,
-                auditor=prelude.auditor,
-                coda_summary=coda_summary,
-                success_outcome=DecisionOutcome.SUCCESS,
-                failure_outcome=DecisionOutcome.FAILURE,
-            )
-
-            if prelude.task_graph and prelude.task_slot_key:
-                try:
-                    if coda_summary.task_state is TaskState.COMPLETED:
-                        prelude.task_graph.complete_task(
-                            prelude.task_slot_key,
-                            result=prelude.task.result_summary,
-                        )
-                    elif coda_summary.task_state is TaskState.PAUSED:
-                        slot = prelude.task_graph.slots.get(prelude.task_slot_key)
-                        if slot is not None:
-                            slot.state = GraphTaskState.QUEUED
-                            slot.result = prelude.task.result_summary
-                            prelude.task_graph.updated_at = time.time()
-                    else:
-                        prelude.task_graph.fail_task(
-                            prelude.task_slot_key,
-                            prelude.task.result_summary,
-                        )
-                except Exception:
-                    logger.debug("TaskGraph finalization skipped", exc_info=True)
-
-            logger.info(
-                "Work chain completed: task=%s state=%s stop_reason=%s steps=%d errors=%d",
-                prelude.task.id,
-                prelude.task.state.value,
-                coda_summary.stop_reason,
-                turn_state.step,
-                turn_state.tool_error_count,
-            )
-
-            # 任务后自省：提取经验教训
-            if orch and prelude.task:
-                try:
-                    execution_trace: list[dict[str, Any]] = [
-                        {"type": "tool_call", "count": turn_state.step},
-                        {
-                            "type": "error",
-                            "count": turn_state.tool_error_count,
-                            "content": f"{turn_state.tool_error_count} errors",
-                        }
-                        if turn_state.tool_error_count > 0
-                        else {},
-                        {"type": "assistant", "steps": turn_state.step},
-                    ]
-                    orch.reflect_on_task(
-                        task_description=(
-                            prelude.task.raw_input
-                            if hasattr(prelude.task, "raw_input")
-                            else str(prelude.task.id)
-                        ),
-                        step=turn_state.step,
-                        tool_error_count=turn_state.tool_error_count,
-                        execution_trace=execution_trace,
-                    )
-                except Exception:
-                    pass
-            elif reflection_engine and prelude.task:
-                try:
-                    execution_trace: list[dict[str, Any]] = [
-                        {"type": "tool_call", "count": turn_state.step},
-                        {
-                            "type": "error",
-                            "count": turn_state.tool_error_count,
-                            "content": f"{turn_state.tool_error_count} errors",
-                        }
-                        if turn_state.tool_error_count > 0
-                        else {},
-                        {"type": "assistant", "steps": turn_state.step},
-                    ]
-                    reflection = reflection_engine.reflect(
-                        task_description=(
-                            prelude.task.raw_input
-                            if hasattr(prelude.task, "raw_input")
-                            else str(prelude.task.id)
-                        ),
-                        execution_trace=execution_trace,
-                    )
-                    logger.info(
-                        "AgentReflection: success=%s confidence=%.2f lessons=%d improvements=%d",
-                        reflection.success, reflection.confidence,
-                        len(reflection.lessons_learned), len(reflection.suggested_improvements),
-                    )
-                except Exception:
-                    pass
-
-            # 记忆质量反馈：任务成功→注入的记忆 usage_count+1
-            if memory_injector and hasattr(memory_injector, '_cached_result'):
-                try:
-                    from minicode.memory import MemoryScope
-                    for mem in memory_injector._cached_result:
-                        if not hasattr(mem, 'id'):
-                            continue
-                        try:
-                            _mgr = memory_mgr
-                        except NameError:
-                            continue
-                        for scope_name in ['project', 'local', 'user']:
-                            try:
-                                scope = MemoryScope(scope_name)
-                                if scope in _mgr.memories:
-                                    entry = _mgr.memories[scope]._id_index.get(mem.id)
-                                    if entry:
-                                        entry.usage_count += (
-                                            2 if turn_state.tool_error_count == 0 else -1
-                                        )
-                                        entry.last_accessed = time.time()
-                                        break
-                                        entry.last_accessed = time.time()
-                                        break
-                            except (ValueError, KeyError):
-                                continue
-                except Exception:
-                    pass
-
-            # 路由反馈学习：记录任务结果以优化未来路由
-            if smart_router and prelude.task:
-                try:
-                    outcome = TaskOutcome(
-                        task_text=(
-                            prelude.task.raw_input
-                            if hasattr(prelude.task, "raw_input")
-                            else str(prelude.task.id)
-                        ),
-                        assigned_model=(
-                            model.model_id if hasattr(model, "model_id") else "unknown"
-                        ),
-                        success=(turn_state.tool_error_count == 0),
-                        duration_ms=turn_state.step * 2000.0,
-                        cost_usd=0.0,
-                        tool_errors=turn_state.tool_error_count,
-                        model_switches=model_switcher.switch_count() if model_switcher else 0,
-                    )
-                    smart_router.learner().record_outcome(outcome)
-                except Exception:
-                    pass
-
-        # 控制论反馈：记录模式有效性
-        if enable_work_chain and feedback_controller and prelude.task:
-            pattern_id = (
-                f"{prelude.task_metadata.get('intent_type', 'unknown')}_{prelude.task.id}"
-            )
-            feedback_controller.record_pattern_effectiveness(
-                pattern_id, turn_state.tool_error_count == 0
-            )
-
-        # 稳定性监测：记录快照
-        if stability_monitor:
-            from minicode.control.stability import MetricSnapshot
-            snapshot = MetricSnapshot(
-                timestamp=time.time(),
-                error_rate=float(turn_state.tool_error_count) / max(turn_state.step, 1),
-                avg_latency=step * 2.0,  # 简化估算
-                context_usage=context_manager.get_stats().usage_percentage if context_manager else 0.0,
-                active_tasks=1,
-            )
-            stability_monitor.record_snapshot(snapshot)
-            if context_cybernetics:
-                stability_monitor.feed_orchestrator(context_cybernetics)
-
-        # 高级控制论：最终状态报告
-        if enable_work_chain:
-            # 状态观测器报告
-            if state_observer:
-                state_summary = state_observer.get_state_summary()
-                logger.info("State observer summary: %s", state_summary)
-
-            # 预测控制器报告
-            if predictive_controller:
-                pred_summary = predictive_controller.get_prediction_summary()
-                logger.info("Prediction summary: accuracy=%s", pred_summary.get("accuracy", {}))
-
-            # 自愈引擎统计
-            if self_healing_engine:
-                healing_stats = self_healing_engine.get_healing_statistics()
-                logger.info("Self-healing stats: %s", healing_stats)
-
-            # 多变量解耦状态
-            if decoupling_controller:
-                coupling_status = decoupling_controller.get_coupling_status()
-                logger.info("Coupling status: strong=%s", coupling_status.get("strong_couplings", []))
-
-        # 上下文管理管线统计 (Claude Code-style + Cybernetics)
-        if context_compactor:
-            compactor_stats = context_compactor.get_stats()
-            logger.info(
-                "ContextCompactor: passes=%d persisted=%d dedup=%d "
-                "microcompact=%d boundaries=%d circuit=%s",
-                compactor_stats["total_passes"],
-                compactor_stats["tool_results_persisted"],
-                compactor_stats["read_dedup_entries"],
-                compactor_stats["microcompact_tokens_cleared"],
-                compactor_stats["auto_compact_boundaries"],
-                "TRIPPED" if compactor_stats["circuit_breaker_tripped"] else "OK",
-            )
-        # 控制论闭环统计 (Engineering Cybernetics)
-        if context_cybernetics:
-            cyber_stats = context_cybernetics.get_stats()
-            logger.info(
-                "Cybernetics: cycles=%d usage=%.1f%% pid_out=%.2f "
-                "predict_overflow=%s urgency=%.2f threshold=%.2f feedback_eff=%.0f%%",
-                cyber_stats["cycles_executed"],
-                (cyber_stats["sensor"]["current_usage"] or 0) * 100,
-                cyber_stats["pid"]["last_output"] or 0,
-                cyber_stats["predictor"]["turns_until_overflow"],
-                cyber_stats["predictor"]["urgency"] or 0,
-                cyber_stats["threshold"]["effective_threshold"] or 0,
-                (cyber_stats["feedback"]["effectiveness_rate"] or 0) * 100,
-            )
-        # 成本控制闭环统计 (BudgetPIDController)
-        if cost_control:
-            cc_stats = cost_control.get_stats()
-            adj = cc_stats.get("adjustment")
-            logger.info(
-                "CostControl: cycles=%d cost/min=$%.4f pid_out=%.2f "
-                "budget_mult=%.2f threshold_mult=%.2f [%s]",
-                cc_stats["cycles_executed"],
-                cc_stats["sensor"]["cost_per_min"],
-                cc_stats["pid"]["last_output"] or 1.0,
-                adj["budget_mult"] if adj else 1.0,
-                adj["threshold_mult"] if adj else 1.0,
-                adj["reason"] if adj else "none",
-            )
-        # 双层 PID 闭环: Cybernetics → FeedbackController
-        if context_cybernetics and feedback_controller:
-            system_state = context_cybernetics.to_system_state()
-            control_signal = feedback_controller.observe(system_state)
-            if control_signal.force_compaction and context_cybernetics.enabled:
-                logger.info(
-                    "Dual-PID: FeedbackController force_compaction=True, "
-                    "stability=%.2f performance=%.2f",
-                    system_state.stability_score(),
-                    system_state.performance_score(),
-                )
-            # Apply outer-loop ControlSignal to runtime parameters
-            if control_signal.confidence > 0.6:
-                if control_signal.limit_max_steps and control_signal.limit_max_steps < max_steps:
-                    logger.info(
-                        "FeedbackController: limiting max_steps %d → %d",
-                        max_steps, control_signal.limit_max_steps,
-                    )
-                    max_steps = control_signal.limit_max_steps
-                if control_signal.adjust_token_budget != 1.0:
-                    if context_compactor and hasattr(context_compactor, '_tool_budget') and context_compactor._tool_budget:
-                        new_budget = max(
-                            1000,
-                            int(context_compactor._tool_budget.budget_per_message * control_signal.adjust_token_budget),
-                        )
-                        context_compactor._tool_budget.budget_per_message = new_budget
-                        logger.info(
-                            "FeedbackController: token budget adjusted to %d (mult=%.2f)",
-                            new_budget, control_signal.adjust_token_budget,
-                        )
-                if control_signal.reduce_parallelism:
-                    # Cap tool concurrency at 2
-                    if not hasattr(tool_scheduler, '_force_max_workers'):
-                        tool_scheduler._force_max_workers = 2
-                    logger.info(
-                        "FeedbackController: reduce_parallelism → max_workers=2 "
-                        "(oscillation=%.2f)", control_signal.oscillation_index,
-                    )
-                if control_signal.adjust_concurrency != 0:
-                    cap = max(1, 4 + control_signal.adjust_concurrency)
-                    tool_scheduler._force_max_workers = cap
-                    logger.info(
-                        "FeedbackController: adjust_concurrency=%+d → max_workers=%d",
-                        control_signal.adjust_concurrency, cap,
-                    )
-                if control_signal.increase_model_level:
-                    logger.info(
-                        "FeedbackController: model upgrade recommended (errors=%.2f perf=%.2f)",
-                        system_state.error_frequency, system_state.performance_score(),
-                    )
-                    if model_switcher:
-                        model_switcher._pending_upgrade = True
-                if control_signal.decrease_model_level:
-                    logger.info(
-                        "FeedbackController: model downgrade recommended (efficiency=%.2f)",
-                        system_state.token_efficiency,
-                    )
-                if control_signal.suggest_memory_persistence:
-                    logger.info("FeedbackController: persisting working memory")
-                    if context_compactor and hasattr(context_compactor, '_tool_budget'):
-                        try:
-                            context_compactor._tool_budget.flush()
-                        except Exception:
-                            pass
-                if control_signal.recommend_skill_update:
-                    logger.info("FeedbackController: skill update recommended (pattern=%.2f)",
-                               system_state.pattern_reuse_rate)
-                    if not hasattr(tool_scheduler, '_pending_skill_update'):
-                        tool_scheduler._pending_skill_update = True
-
-                if control_signal.reduce_tool_timeout:
-                    new_timeout = max(5.0, control_signal.reduce_tool_timeout)
-                    tool_scheduler._force_tool_timeout = new_timeout
-                    logger.info(
-                        "FeedbackController: tool timeout reduced to %.1fs",
-                        new_timeout,
-                    )
-                elif hasattr(tool_scheduler, '_force_tool_timeout'):
-                    del tool_scheduler._force_tool_timeout
-
-                if control_signal.increase_nudge_frequency:
-                    tool_scheduler._force_nudge_frequency = True
-                    logger.info(
-                        "FeedbackController: nudge frequency increased (stability=%.2f)",
-                        system_state.stability_score(),
-                    )
-                elif hasattr(tool_scheduler, '_force_nudge_frequency'):
-                    del tool_scheduler._force_nudge_frequency
-
-                if control_signal.promote_pattern:
-                    feedback_controller.record_pattern_effectiveness(
-                        control_signal.promote_pattern, True
-                    )
-                    logger.info(
-                        "FeedbackController: pattern promoted '%s'",
-                        control_signal.promote_pattern,
-                    )
-
-                if control_signal.force_compaction and context_compactor:
-                    try:
-                        compacted = context_compactor.compact_messages()
-                        logger.info(
-                            "FeedbackController: forced compaction (%d messages)",
-                            len(compacted) if compacted else 0,
-                        )
-                    except Exception as exc:
-                        logger.warning("FeedbackController: forced compaction failed: %s", exc)
-
-            # 自适应PID调参：每20轮自动调节内外环PID参数
-            if adaptive_pid_tuner and step > 0 and step % 20 == 0 and feedback_controller:
-                try:
-                    stability_error = 1.0 - system_state.stability_score()
-                    perf_score = system_state.performance_score()
-                    tuned = adaptive_pid_tuner.tune(
-                        stability_error, dt=1.0, performance_score=perf_score
-                    )
-                    if tuned and adaptive_pid_tuner._performance_history:
-                        recent_perf = adaptive_pid_tuner._performance_history[-5:]
-                        avg_perf = sum(recent_perf) / len(recent_perf)
-                        if context_cybernetics:
-                            cp = context_cybernetics.pid
-                            cp.kp = tuned.kp
-                            cp.ki = tuned.ki
-                            cp.kd = tuned.kd
-                            logger.info(
-                                "AdaptivePIDTuner: context PID tuned kp=%.3f ki=%.3f kd=%.3f "
-                                "method=%s perf=%.2f",
-                                tuned.kp, tuned.ki, tuned.kd,
-                                adaptive_pid_tuner._active_method.value if hasattr(adaptive_pid_tuner, '_active_method') else 'unknown',
-                                avg_perf,
-                            )
-                except Exception:
-                    pass  # 调参失败不能拖垮主循环
-
-        # 总监督层: 汇总局部控制器输出为统一风险视图
-        if cybernetic_supervisor:
-            supervisor_snapshots = []
-            if context_cybernetics:
-                supervisor_snapshots.append(
-                    cybernetic_supervisor.snapshot_from_context(context_cybernetics.get_stats())
-                )
-            if cost_control:
-                supervisor_snapshots.append(
-                    cybernetic_supervisor.snapshot_from_cost(cost_control.get_stats())
-                )
-            if tool_scheduler.last_decision:
-                supervisor_snapshots.append(
-                    cybernetic_supervisor.snapshot_from_tool_decision(
-                        tool_scheduler.last_decision.to_dict()
-                    )
-                )
-            supervisor_report = cybernetic_supervisor.report(supervisor_snapshots)
-            save_supervisor_report(supervisor_report)
-            logger.info(
-                "CyberneticSupervisor: health=%.2f risk=%s actions=%s",
-                supervisor_report.overall_health,
-                supervisor_report.risk_level.value,
-                "; ".join(supervisor_report.recommended_actions[:3]),
-            )

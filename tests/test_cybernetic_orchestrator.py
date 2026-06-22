@@ -11,8 +11,15 @@ class TestOrchestratorInit:
         mock_model = MagicMock()
         mock_model.model_id = "test-model"
         mock_tools = MagicMock()
+        smart_router = MagicMock()
+        reflection = MagicMock()
         orch = CyberneticOrchestrator()
-        orch.initialize(mock_model, mock_tools)
+        orch.initialize(
+            mock_model,
+            mock_tools,
+            smart_router=smart_router,
+            reflection=reflection,
+        )
         assert orch._initialized
         assert orch.feedback is not None
         assert orch.stability is not None
@@ -24,7 +31,8 @@ class TestOrchestratorInit:
         assert orch.cost_control is not None
         assert orch.memory_ctrl is not None
         assert orch.model_ctrl is not None
-        assert orch.smart_router is not None
+        assert orch.smart_router is smart_router
+        assert orch.reflection is reflection
         assert orch.model_switcher is not None
 
     def test_wire_healing(self):
