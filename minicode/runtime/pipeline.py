@@ -19,8 +19,8 @@ from typing import Any, Callable
 
 from minicode.task_object import TaskObject, TaskState, ConstraintType
 from minicode.cybernetic_supervisor import CyberneticSupervisor
-from minicode.decision_audit import get_auditor, DecisionType, DecisionOutcome
-from minicode.logging_config import get_logger
+from minicode.observability.decision_audit import get_auditor, DecisionType, DecisionOutcome
+from minicode.observability.logging import get_logger
 from minicode.progress_controller import ProgressController, ProgressSignal
 from minicode.verification_controller import VerificationController
 

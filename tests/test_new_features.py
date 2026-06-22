@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from minicode.api_retry import (
+from minicode.providers.retry import (
     APIRetryExhaustedError,
     HTTPError,
     RetryState,

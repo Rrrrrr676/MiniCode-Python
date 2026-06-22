@@ -17,7 +17,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from minicode.permissions import PermissionManager
+from minicode.safety.permissions import PermissionManager
 from minicode.tooling import ToolRegistry
 from minicode.tui.chrome import _cached_terminal_size
 from minicode.tui.input_parser import (
@@ -194,7 +194,7 @@ def run_tty_app(
                         break
                     except Exception as e:
                         # 记录事件处理错误，但不中断主循环
-                        from minicode.logging_config import get_logger
+                        from minicode.observability.logging import get_logger
                         get_logger("tty_app").debug("Event handling error: %s", e, exc_info=True)
 
                 # Ensure the final state after processing all events is visible

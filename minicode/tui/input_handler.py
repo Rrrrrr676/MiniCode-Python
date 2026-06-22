@@ -400,7 +400,7 @@ def _handle_input(
     fire_hook_sync(HookEvent.USER_INPUT, user_input=input_text)
     
     # Prompt injection detection (input layer)
-    from minicode.auto_mode import AutoModeChecker
+    from minicode.safety.auto_mode import AutoModeChecker
     is_injection, injection_reason = AutoModeChecker.detect_prompt_injection(input_text)
     if is_injection:
         logger.warning("Potential prompt injection detected: %s", injection_reason)
@@ -457,7 +457,7 @@ def _handle_input(
         # Hook: assistant output
         fire_hook_sync(HookEvent.ASSISTANT_OUTPUT, assistant_output=content[:500])
         # Output safety check (output layer)
-        from minicode.auto_mode import AutoModeChecker
+        from minicode.safety.auto_mode import AutoModeChecker
         is_unsafe, unsafe_reason = AutoModeChecker.classify_output_safety(content)
         if is_unsafe:
             logger.warning("Potentially unsafe output detected: %s", unsafe_reason)

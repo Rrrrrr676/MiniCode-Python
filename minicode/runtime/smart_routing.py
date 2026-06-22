@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from minicode.agent_router import AgentRouter, RoutingDecision, extract_task_profile
-from minicode.logging_config import get_logger
-from minicode.model_registry import resolve_model_info
-from minicode.model_switcher import ModelSwitcher, SwitchResult
+from minicode.observability.logging import get_logger
+from minicode.providers.registry import resolve_model_info
+from minicode.providers.switching import ModelSwitcher, SwitchResult
 
 logger = get_logger("smart_router")
 

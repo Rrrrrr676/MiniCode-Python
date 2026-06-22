@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from minicode.agent_metrics import (
+from minicode.observability.metrics import (
     AgentMetricsCollector,
     AgentTurnMetrics,
     ErrorCategory,

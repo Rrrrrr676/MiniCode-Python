@@ -11,8 +11,8 @@ from minicode.config import load_runtime_config
 from minicode.history import load_history_entries, save_history_entries
 from minicode.local_tool_shortcuts import parse_local_tool_shortcut
 from minicode.manage_cli import maybe_handle_management_command
-from minicode.model_registry import create_model_adapter
-from minicode.permissions import PermissionManager
+from minicode.providers.registry import create_model_adapter
+from minicode.safety.permissions import PermissionManager
 from minicode.prompt import build_system_prompt_bundle
 from minicode.session import (
     format_rewind_preview,
@@ -328,7 +328,7 @@ def main() -> None:
         parser.error(f"unrecognized arguments: {' '.join(remaining_argv)}")
 
     # Initialize logging
-    from minicode.logging_config import setup_logging, structured_logging_requested
+    from minicode.observability.logging import setup_logging, structured_logging_requested
     setup_logging(
         level=args.log_level,
         structured=structured_logging_requested(cli_flag=args.structured_logs),
@@ -419,7 +419,7 @@ def main() -> None:
     
     # Initialize ContextManager for context window management
     from minicode.context_manager import ContextManager
-    from minicode.logging_config import get_logger
+    from minicode.observability.logging import get_logger
     logger = get_logger("main")
     context_mgr = None
     if runtime:
@@ -593,7 +593,7 @@ def main() -> None:
         print("\n\nInterrupted by user. Shutting down gracefully...")
     finally:
         # Graceful shutdown: clean up all resources
-        from minicode.logging_config import get_logger
+        from minicode.observability.logging import get_logger
         logger = get_logger("main")
         logger.info("Shutting down...")
         

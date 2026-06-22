@@ -14,8 +14,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
-from minicode.api_retry import RETRYABLE_STATUS, calculate_backoff
-from minicode.cost_tracker import calculate_cost
+from minicode.providers.retry import RETRYABLE_STATUS, calculate_backoff
+from minicode.providers.cost import calculate_cost
 from minicode.context.tokens import estimate_messages_tokens
 from minicode.state import Store, AppState, add_cost, record_api_error, update_context_usage
 from minicode.types import AgentStep, StepDiagnostics
@@ -289,7 +289,7 @@ class OpenAIModelAdapter:
                     or _is_non_retryable_openai_error(error.code, parsed_error, raw_error_text)
                 ):
                     break
-                from minicode.api_retry import classify_error
+                from minicode.providers.retry import classify_error
                 category = classify_error(error)
                 wait = calculate_backoff(attempt, category=category)
                 time.sleep(wait)

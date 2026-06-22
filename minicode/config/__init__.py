@@ -189,7 +189,7 @@ def describe_provider_channel(
     runtime = runtime or {}
     provider_key = (provider_name or "").strip().lower()
     if not provider_key:
-        from minicode.providers.spec import detect_provider
+        from minicode.core.provider_spec import detect_provider
 
         provider_key = detect_provider(
             str(runtime.get("model", "")).strip(),
@@ -234,7 +234,7 @@ def describe_fallback_guidance(
     runtime = runtime or {}
     provider_key = (provider_name or "").strip().lower()
     if not provider_key:
-        from minicode.providers.spec import detect_provider
+        from minicode.core.provider_spec import detect_provider
 
         provider_key = detect_provider(
             str(current_model or runtime.get("model", "")).strip(),
@@ -590,7 +590,7 @@ def validate_provider_runtime(runtime: dict[str, Any]) -> list[str]:
     OpenAI-compatible credentials must be present; likewise for Anthropic,
     OpenRouter, and custom endpoints.
     """
-    from minicode.providers.spec import Provider, detect_provider
+    from minicode.core.provider_spec import Provider, detect_provider
 
     model = str(runtime.get("model", "")).strip()
     provider = detect_provider(model, runtime)
@@ -747,7 +747,7 @@ def format_config_diagnostic(cwd: str | Path | None = None) -> str:
         lines.append(f"  Model: {model_name}")
 
         # Show provider info
-        from minicode.providers.spec import Provider, detect_provider
+        from minicode.core.provider_spec import Provider, detect_provider
         provider = detect_provider(model_name, config)
         lines.append(f"  Provider: {provider.value}")
         lines.append(f"  Channel: {describe_provider_channel(config, provider.value)}")

@@ -21,7 +21,7 @@ from minicode.headless import _make_auto_approve_prompt
 from minicode.memory import MemoryEntry, MemoryManager, MemoryScope
 from minicode.mcp import create_mcp_backed_tools
 from minicode.micro_compact import MicroCompactor, MicroCompactorConfig
-from minicode.permissions import PermissionManager
+from minicode.safety.permissions import PermissionManager
 from minicode.prompt import build_system_prompt_bundle
 from minicode.session import create_new_session, load_session, save_session
 from minicode.tools import create_default_tool_registry

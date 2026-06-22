@@ -1,5 +1,5 @@
 from minicode.agent_loop import run_agent_turn
-from minicode.model_switcher import ModelSwitcher
+from minicode.providers.switching import ModelSwitcher
 from minicode.state import create_app_store
 from minicode.tooling import ToolDefinition, ToolRegistry, ToolResult
 from minicode.types import (
@@ -459,10 +459,10 @@ def test_agent_turn_switches_to_fallback_model_on_provider_channel_error(monkeyp
 
     monkeypatch.setenv("ANTHROPIC_MODEL_FALLBACKS", "qwen3.6-plus")
     monkeypatch.setattr(
-        "minicode.model_switcher.build_provider_config",
+        "minicode.providers.switching.build_provider_config",
         lambda model, runtime=None: SimpleNamespace(api_key="test-key"),
     )
-    monkeypatch.setattr("minicode.model_switcher.create_model_adapter", _fake_create_model_adapter)
+    monkeypatch.setattr("minicode.providers.switching.create_model_adapter", _fake_create_model_adapter)
 
     messages = run_agent_turn(
         model=ProviderUnavailableModel(),
@@ -489,10 +489,10 @@ def test_agent_turn_does_not_bounce_between_failed_provider_fallback_models(monk
 
     monkeypatch.setenv("ANTHROPIC_MODEL_FALLBACKS", "claude-haiku-3-20240307")
     monkeypatch.setattr(
-        "minicode.model_switcher.build_provider_config",
+        "minicode.providers.switching.build_provider_config",
         lambda model, runtime=None: SimpleNamespace(api_key="test-key"),
     )
-    monkeypatch.setattr("minicode.model_switcher.create_model_adapter", _failing_create_model_adapter)
+    monkeypatch.setattr("minicode.providers.switching.create_model_adapter", _failing_create_model_adapter)
 
     messages = run_agent_turn(
         model=NamedProviderUnavailableModel("deepseek-v4-pro[1m]"),
@@ -527,14 +527,14 @@ def test_agent_turn_respects_runtime_anthropic_family_model_overrides(monkeypatc
 
     monkeypatch.delenv("ANTHROPIC_MODEL_FALLBACKS", raising=False)
     monkeypatch.setattr(
-        "minicode.model_switcher.build_provider_config",
+        "minicode.providers.switching.build_provider_config",
         lambda model, runtime=None: SimpleNamespace(
             api_key="test-key"
             if model.startswith("claude") or model == "deepseek-v4-pro[1m]"
             else ""
         ),
     )
-    monkeypatch.setattr("minicode.model_switcher.create_model_adapter", _failing_create_model_adapter)
+    monkeypatch.setattr("minicode.providers.switching.create_model_adapter", _failing_create_model_adapter)
 
     messages = run_agent_turn(
         model=NamedProviderUnavailableModel("deepseek-v4-pro[1m]"),
@@ -563,7 +563,7 @@ def test_model_switcher_uses_snapshotted_anthropic_family_overrides_when_runtime
 
     monkeypatch.delenv("ANTHROPIC_MODEL_FALLBACKS", raising=False)
     monkeypatch.setattr(
-        "minicode.model_switcher.build_provider_config",
+        "minicode.providers.switching.build_provider_config",
         lambda model, runtime=None: SimpleNamespace(
             api_key="test-key"
             if model.startswith("claude") or model == "deepseek-v4-pro[1m]"
@@ -591,7 +591,7 @@ def test_model_switcher_defaults_blank_anthropic_family_overrides_to_current_non
 
     monkeypatch.delenv("ANTHROPIC_MODEL_FALLBACKS", raising=False)
     monkeypatch.setattr(
-        "minicode.model_switcher.build_provider_config",
+        "minicode.providers.switching.build_provider_config",
         lambda model, runtime=None: SimpleNamespace(
             api_key="test-key"
             if model.startswith("claude") or model == "deepseek-v4-pro[1m]"
@@ -619,14 +619,14 @@ def test_agent_turn_infers_active_runtime_model_when_adapter_has_no_model_id(mon
 
     monkeypatch.delenv("ANTHROPIC_MODEL_FALLBACKS", raising=False)
     monkeypatch.setattr(
-        "minicode.model_switcher.build_provider_config",
+        "minicode.providers.switching.build_provider_config",
         lambda model, runtime=None: SimpleNamespace(
             api_key="test-key"
             if model.startswith("claude") or model == "deepseek-v4-pro[1m]"
             else ""
         ),
     )
-    monkeypatch.setattr("minicode.model_switcher.create_model_adapter", _failing_create_model_adapter)
+    monkeypatch.setattr("minicode.providers.switching.create_model_adapter", _failing_create_model_adapter)
 
     messages = run_agent_turn(
         model=UnnamedProviderUnavailableModel("deepseek-v4-pro[1m]"),
@@ -652,13 +652,13 @@ def test_model_switcher_prefers_runtime_configured_fallback_models(monkeypatch) 
     monkeypatch.delenv("MINI_CODE_MODEL_FALLBACKS", raising=False)
     monkeypatch.delenv("OPENAI_MODEL_FALLBACKS", raising=False)
     monkeypatch.setattr(
-        "minicode.model_switcher.build_provider_config",
+        "minicode.providers.switching.build_provider_config",
         lambda model, runtime=None: SimpleNamespace(
             api_key="test-key" if model == "gpt-4o" else ""
         ),
     )
     monkeypatch.setattr(
-        "minicode.model_switcher.create_model_adapter",
+        "minicode.providers.switching.create_model_adapter",
         lambda model, tools, runtime=None, force_mock=False: created_models.append(model) or object(),
     )
 
@@ -689,12 +689,12 @@ def test_agent_turn_uses_default_runtime_fallback_chain_without_explicit_configu
     monkeypatch.delenv("MINI_CODE_MODEL_FALLBACKS", raising=False)
     monkeypatch.delenv("ANTHROPIC_MODEL_FALLBACKS", raising=False)
     monkeypatch.setattr(
-        "minicode.model_switcher.build_provider_config",
+        "minicode.providers.switching.build_provider_config",
         lambda model, runtime=None: SimpleNamespace(
             api_key="test-key" if model in {"gpt-4o", "gpt-4o-mini", "deepseek-v4-pro[1m]"} else ""
         ),
     )
-    monkeypatch.setattr("minicode.model_switcher.create_model_adapter", _fake_create_model_adapter)
+    monkeypatch.setattr("minicode.providers.switching.create_model_adapter", _fake_create_model_adapter)
 
     messages = run_agent_turn(
         model=ProviderUnavailableModel(),
@@ -724,7 +724,7 @@ def test_model_switcher_bounds_custom_openai_host_fallbacks(monkeypatch) -> None
     monkeypatch.delenv("MINI_CODE_MODEL_FALLBACKS", raising=False)
     monkeypatch.delenv("OPENAI_MODEL_FALLBACKS", raising=False)
     monkeypatch.setattr(
-        "minicode.model_switcher.build_provider_config",
+        "minicode.providers.switching.build_provider_config",
         lambda model, runtime=None: SimpleNamespace(
             api_key="openai-key",
             base_url="https://www.cctq.ai",
@@ -747,14 +747,14 @@ def test_agent_turn_provider_outage_guidance_prefers_provider_exposed_models_whe
     monkeypatch.delenv("MINI_CODE_MODEL_FALLBACKS", raising=False)
     monkeypatch.delenv("OPENAI_MODEL_FALLBACKS", raising=False)
     monkeypatch.setattr(
-        "minicode.model_switcher.build_provider_config",
+        "minicode.providers.switching.build_provider_config",
         lambda model, runtime=None: SimpleNamespace(
             api_key="openai-key",
             base_url="https://www.cctq.ai",
         ),
     )
     monkeypatch.setattr(
-        "minicode.model_switcher.create_model_adapter",
+        "minicode.providers.switching.create_model_adapter",
         lambda model, tools, runtime=None, force_mock=False: NamedProviderUnavailableModel(model),
     )
 
@@ -790,7 +790,7 @@ def test_model_switcher_bounds_custom_openai_host_fallbacks_with_legacy_api_base
     monkeypatch.delenv("MINI_CODE_MODEL_FALLBACKS", raising=False)
     monkeypatch.delenv("OPENAI_MODEL_FALLBACKS", raising=False)
     monkeypatch.setattr(
-        "minicode.model_switcher.build_provider_config",
+        "minicode.providers.switching.build_provider_config",
         lambda model, runtime=None: SimpleNamespace(
             api_key="openai-key",
             api_base_url="https://www.cctq.ai",

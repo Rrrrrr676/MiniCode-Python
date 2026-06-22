@@ -43,7 +43,7 @@ class TestStartupAndConfig:
 
     def test_logging_system_initialization(self):
         """Test logging system initializes correctly."""
-        from minicode.logging_config import setup_logging, get_logger
+        from minicode.observability.logging import setup_logging, get_logger
         logger = setup_logging(level="DEBUG", log_to_file=False, log_to_console=False)
         assert logger.name == "minicode"
         assert logger.level == 10  # DEBUG level
@@ -51,7 +51,7 @@ class TestStartupAndConfig:
     def test_core_module_imports(self):
         """Test all core modules import without errors."""
         from minicode.main import main
-        from minicode.logging_config import setup_logging
+        from minicode.observability.logging import setup_logging
         from minicode.context_manager import ContextManager
         from minicode.memory import MemoryManager
         from minicode.config import validate_config
@@ -137,21 +137,21 @@ class TestPermissionSystem:
 
     def test_path_access_within_cwd_allowed(self):
         """Test that path access within cwd is allowed."""
-        from minicode.permissions import PermissionManager
+        from minicode.safety.permissions import PermissionManager
         pm = PermissionManager(workspace_root="/test/cwd")
         # Should not raise
         pm.ensure_path_access("/test/cwd/file.txt", "read")
 
     def test_path_access_outside_cwd_denied_without_prompt(self):
         """Test that path access outside cwd is denied when no prompt."""
-        from minicode.permissions import PermissionManager
+        from minicode.safety.permissions import PermissionManager
         pm = PermissionManager(workspace_root="/test/cwd")
         with pytest.raises(RuntimeError, match="outside cwd"):
             pm.ensure_path_access("/etc/passwd", "read")
 
     def test_dangerous_command_detection(self):
         """Test that dangerous commands are detected."""
-        from minicode.permissions import _classify_dangerous_command
+        from minicode.safety.permissions import _classify_dangerous_command
         # Git dangerous commands
         result = _classify_dangerous_command("git", ["reset", "--hard"])
         assert result is not None

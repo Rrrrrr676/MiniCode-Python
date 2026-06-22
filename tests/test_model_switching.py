@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from minicode.context_manager import ContextManager
-from minicode.model_switcher import ModelSwitcher, SwitchResult
+from minicode.providers.switching import ModelSwitcher, SwitchResult
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ def test_switch_to_succeeds_and_updates_runtime(monkeypatch):
         built["model"] = model
         return _FakeAdapter()
 
-    monkeypatch.setattr("minicode.model_switcher.create_model_adapter", _fake_create)
+    monkeypatch.setattr("minicode.providers.switching.create_model_adapter", _fake_create)
 
     runtime = {"model": "claude-sonnet-4-6", "baseUrl": "https://x", "authToken": "t"}
     switcher = ModelSwitcher(
@@ -137,7 +137,7 @@ def test_switch_to_failure_does_not_crash_or_mutate(monkeypatch):
     def _boom(*, model, tools, runtime):
         raise RuntimeError("no channel for model")
 
-    monkeypatch.setattr("minicode.model_switcher.create_model_adapter", _boom)
+    monkeypatch.setattr("minicode.providers.switching.create_model_adapter", _boom)
 
     runtime = {"model": "claude-sonnet-4-6", "authToken": "t"}
     switcher = ModelSwitcher("claude-sonnet-4-6", runtime, object())

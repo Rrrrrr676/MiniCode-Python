@@ -577,8 +577,8 @@ class WebSessionRunner:
         from minicode.agent_loop import run_agent_turn
         from minicode.config import load_runtime_config
         from minicode.memory import MemoryManager
-        from minicode.model_registry import create_model_adapter
-        from minicode.permissions import PermissionManager
+        from minicode.providers.registry import create_model_adapter
+        from minicode.safety.permissions import PermissionManager
         from minicode.prompt import build_system_prompt
         from minicode.tools import create_default_tool_registry
 

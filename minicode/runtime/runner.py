@@ -6,8 +6,8 @@ from typing import Any, Callable
 
 from minicode.context.tokens import estimate_message_tokens
 from minicode.context_manager import ContextManager
-from minicode.logging_config import get_logger
-from minicode.permissions import PermissionManager
+from minicode.observability.logging import get_logger
+from minicode.safety.permissions import PermissionManager
 from minicode.state import Store, AppState, increment_tool_calls, set_busy, set_idle
 from minicode.tooling import ToolContext, ToolRegistry, ToolResult
 from minicode.types import (
@@ -22,7 +22,7 @@ from minicode.types import (
 from minicode.hooks import HookEvent, fire_hook_sync
 
 # Intelligence integration
-from minicode.agent_metrics import AgentMetricsCollector
+from minicode.observability.metrics import AgentMetricsCollector
 from minicode.agent_intelligence import ErrorClassifier, NudgeGenerator, ToolScheduler
 from minicode.working_memory import get_working_memory, protect_context
 
@@ -33,7 +33,7 @@ from minicode.task_graph import TaskGraph, TaskState as GraphTaskState
 from minicode.pipeline_engine import get_pipeline_engine
 from minicode.capability_registry import get_registry, CapabilityDomain
 from minicode.layered_context import ContextBuilder, LayeredContext
-from minicode.decision_audit import get_auditor, DecisionOutcome
+from minicode.observability.decision_audit import get_auditor, DecisionOutcome
 from minicode.runtime_profiles import resolve_runtime_profile
 
 # 工程控制论集成
@@ -50,7 +50,7 @@ from minicode.progress_controller import ProgressSignal, ProgressAction
 
 # 记忆注入和模型选择控制
 from minicode.memory_injector import MemoryInjectionSignal, MemoryInjector
-from minicode.model_registry import ModelSelectionSignal
+from minicode.providers.registry import ModelSelectionSignal
 
 # 智能路由与自省 (Phase 3 导入)
 from minicode.smart_router import TaskOutcome

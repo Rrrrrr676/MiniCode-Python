@@ -32,8 +32,8 @@ from minicode.session import (
     create_new_session,
 )
 from minicode.agent_loop import run_agent_turn
-from minicode.mock_model import MockModelAdapter
-from minicode.permissions import PermissionManager
+from minicode.providers.mock import MockModelAdapter
+from minicode.safety.permissions import PermissionManager
 from minicode.tools import create_default_tool_registry
 from minicode.prompt import build_system_prompt
 

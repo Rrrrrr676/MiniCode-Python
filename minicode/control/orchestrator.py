@@ -40,12 +40,12 @@ from minicode.cybernetic_supervisor import CyberneticSupervisor, save_supervisor
 from minicode.decoupling_controller import DecouplingController
 from minicode.feedback_controller import FeedbackController
 from minicode.feedforward_controller import FeedforwardController
-from minicode.logging_config import get_logger
+from minicode.observability.logging import get_logger
 from minicode.memory import MemoryManager
 from minicode.memory_injector import (
     MemoryInjectionController,
 )
-from minicode.model_registry import ModelSelectionController, ModelSelectionSignal
+from minicode.providers.registry import ModelSelectionController, ModelSelectionSignal
 from minicode.predictive_controller import PredictiveController
 from minicode.progress_controller import ProgressAction, ProgressController, ProgressSignal
 from minicode.self_healing_engine import SelfHealingEngine
@@ -129,7 +129,7 @@ class CyberneticOrchestrator:
 
         # Import-heavy modules (lazy to avoid circular imports)
         from minicode.agent_reflection import ReflectionEngine
-        from minicode.model_switcher import ModelSwitcher
+        from minicode.providers.switching import ModelSwitcher
         from minicode.smart_router import SmartRouter
 
         self.smart_router = SmartRouter()

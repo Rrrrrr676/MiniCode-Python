@@ -18,8 +18,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from minicode.logging_config import get_logger
-from minicode.model_registry import BUILTIN_MODELS, ModelInfo
+from minicode.observability.logging import get_logger
+from minicode.providers.registry import BUILTIN_MODELS, ModelInfo
 
 logger = get_logger("agent_router")
 

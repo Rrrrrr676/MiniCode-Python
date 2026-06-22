@@ -12,7 +12,7 @@ import math
 from collections import Counter
 from typing import Any
 
-from minicode.logging_config import get_logger
+from minicode.observability.logging import get_logger
 
 logger = get_logger("vector_memory")
 

@@ -4,9 +4,9 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from minicode.cost_tracker import CostTracker
+from minicode.providers.cost import CostTracker
 from minicode.history import load_history_entries
-from minicode.permissions import PermissionManager
+from minicode.safety.permissions import PermissionManager
 from minicode.session import (
     AutosaveManager,
     SessionData,

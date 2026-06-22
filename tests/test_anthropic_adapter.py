@@ -2,9 +2,9 @@ import json
 import urllib.error
 
 import pytest
-from minicode.anthropic_adapter import AnthropicModelAdapter, _messages_endpoint
-from minicode.openai_adapter import OpenAIModelAdapter
-from minicode.model_registry import create_model_adapter
+from minicode.providers.anthropic import AnthropicModelAdapter, _messages_endpoint
+from minicode.providers.openai import OpenAIModelAdapter
+from minicode.providers.registry import create_model_adapter
 from minicode.tooling import ToolDefinition, ToolRegistry
 
 

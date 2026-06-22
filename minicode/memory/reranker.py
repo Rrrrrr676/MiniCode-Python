@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from minicode.logging_config import get_logger
+from minicode.observability.logging import get_logger
 
 logger = get_logger("memory_reranker")
 
@@ -334,7 +334,7 @@ def create_reranker(model: Any | None = None, **kwargs: Any) -> MemoryReranker:
 
     # Try to create a lightweight model for reranking
     try:
-        from minicode.model_registry import create_model_adapter
+        from minicode.providers.registry import create_model_adapter
         adapter = create_model_adapter(
             model="claude-haiku-3-5-20241022",
             tools=None,

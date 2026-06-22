@@ -25,7 +25,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-from minicode.logging_config import get_logger
+from minicode.observability.logging import get_logger
 
 logger = get_logger("memory_curator")
 

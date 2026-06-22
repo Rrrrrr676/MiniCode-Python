@@ -77,14 +77,14 @@ def test_run_headless_forwards_runtime_to_agent_turn(monkeypatch, tmp_path: Path
         "minicode.tools.create_default_tool_registry",
         lambda cwd, runtime=None: ToolRegistry([]),
     )
-    monkeypatch.setattr("minicode.permissions.PermissionManager", _DummyPermissions)
+    monkeypatch.setattr("minicode.safety.permissions.PermissionManager", _DummyPermissions)
     monkeypatch.setattr("minicode.memory.MemoryManager", _DummyMemoryManager)
     monkeypatch.setattr(
         "minicode.prompt.build_system_prompt",
         lambda cwd, permissions, context: "sys",
     )
     monkeypatch.setattr(
-        "minicode.model_registry.create_model_adapter",
+        "minicode.providers.registry.create_model_adapter",
         lambda model, tools, runtime=None: object(),
     )
 
@@ -125,14 +125,14 @@ def test_run_headless_provider_failure_uses_runtime_channel_details(
         "minicode.tools.create_default_tool_registry",
         lambda cwd, runtime=None: ToolRegistry([]),
     )
-    monkeypatch.setattr("minicode.permissions.PermissionManager", _DummyPermissions)
+    monkeypatch.setattr("minicode.safety.permissions.PermissionManager", _DummyPermissions)
     monkeypatch.setattr("minicode.memory.MemoryManager", _DummyMemoryManager)
     monkeypatch.setattr(
         "minicode.prompt.build_system_prompt",
         lambda cwd, permissions, context: "sys",
     )
     monkeypatch.setattr(
-        "minicode.model_registry.create_model_adapter",
+        "minicode.providers.registry.create_model_adapter",
         lambda model, tools, runtime=None: _ProviderUnavailableModel(),
     )
 
@@ -165,14 +165,14 @@ def test_run_headless_writes_messages_trace_when_requested(monkeypatch, tmp_path
         "minicode.tools.create_default_tool_registry",
         lambda cwd, runtime=None: ToolRegistry([]),
     )
-    monkeypatch.setattr("minicode.permissions.PermissionManager", _DummyPermissions)
+    monkeypatch.setattr("minicode.safety.permissions.PermissionManager", _DummyPermissions)
     monkeypatch.setattr("minicode.memory.MemoryManager", _DummyMemoryManager)
     monkeypatch.setattr(
         "minicode.prompt.build_system_prompt",
         lambda cwd, permissions, context: "sys",
     )
     monkeypatch.setattr(
-        "minicode.model_registry.create_model_adapter",
+        "minicode.providers.registry.create_model_adapter",
         lambda model, tools, runtime=None: object(),
     )
     monkeypatch.setattr(
@@ -217,7 +217,7 @@ def test_allow_edits_auto_approve_grants_edits_and_out_of_cwd(tmp_path: Path) ->
     out-of-cwd paths — the wall that previously made headless unusable for
     edits."""
     from minicode.headless import _make_auto_approve_prompt
-    from minicode.permissions import PermissionManager
+    from minicode.safety.permissions import PermissionManager
 
     perm = PermissionManager(str(tmp_path), prompt=_make_auto_approve_prompt())
     # Previously raised: "Edit requires approval ... Start minicode in TTY mode"
@@ -228,7 +228,7 @@ def test_allow_edits_auto_approve_grants_edits_and_out_of_cwd(tmp_path: Path) ->
 
 def test_allow_edits_off_still_blocks_edits(tmp_path: Path) -> None:
     """Without the flag/env, headless edits remain blocked (no prompt)."""
-    from minicode.permissions import PermissionManager
+    from minicode.safety.permissions import PermissionManager
 
     perm = PermissionManager(str(tmp_path), prompt=None)
     with pytest.raises(RuntimeError, match="approval"):

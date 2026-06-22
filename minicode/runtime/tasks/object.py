@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Any
 
 from minicode.intent_parser import ParsedIntent
-from minicode.logging_config import get_logger
+from minicode.observability.logging import get_logger
 
 logger = get_logger("task_object")
 

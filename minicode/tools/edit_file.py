@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import difflib
 
-from minicode.file_review import apply_reviewed_file_change, load_existing_file
+from minicode.safety.file_review import apply_reviewed_file_change, load_existing_file
 from minicode.tooling import ToolDefinition, ToolResult
 from minicode.workspace import resolve_tool_path
 

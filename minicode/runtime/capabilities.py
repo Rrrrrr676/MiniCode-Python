@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from minicode.logging_config import get_logger
+from minicode.observability.logging import get_logger
 
 logger = get_logger("capability_registry")
 

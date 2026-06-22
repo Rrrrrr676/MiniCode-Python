@@ -16,7 +16,7 @@ import logging
 
 import pytest
 
-from minicode.logging_config import (
+from minicode.observability.logging import (
     StructuredFormatter,
     log_permission_check,
     log_session_event,
@@ -33,7 +33,7 @@ from minicode.tooling import ToolDefinition, ToolRegistry, ToolResult
 
 
 def test_rotation_is_size_only_no_dead_timed_constants() -> None:
-    import minicode.logging_config as lc
+    import minicode.observability.logging as lc
 
     # The dead "also rotate at midnight" constants must be gone.
     assert not hasattr(lc, "LOG_ROTATION_WHEN")
@@ -45,7 +45,7 @@ def test_rotation_is_size_only_no_dead_timed_constants() -> None:
 def test_setup_logging_uses_rotating_file_handler(tmp_path, monkeypatch) -> None:
     import logging.handlers as handlers
 
-    monkeypatch.setattr(lc := __import__("minicode.logging_config", fromlist=["LOG_FILE"]), "LOG_FILE", tmp_path / "t.log")
+    monkeypatch.setattr(lc := __import__("minicode.observability.logging", fromlist=["LOG_FILE"]), "LOG_FILE", tmp_path / "t.log")
     setup_logging(level="DEBUG", log_to_console=False, structured=False)
     root = logging.getLogger("minicode")
     file_handlers = [h for h in root.handlers if isinstance(h, handlers.RotatingFileHandler)]
@@ -138,7 +138,7 @@ def test_tool_execute_logs_crash(caplog) -> None:
 
 
 def test_log_permission_check_emits(caplog) -> None:
-    with caplog.at_level(logging.DEBUG, logger="minicode.permissions"):
+    with caplog.at_level(logging.DEBUG, logger="minicode.safety.permissions"):
         log_permission_check("edit_file", "/tmp/x", granted=False)
     assert any("Permission denied" in r.getMessage() for r in caplog.records)
 

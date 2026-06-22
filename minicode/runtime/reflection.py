@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from minicode.logging_config import get_logger
+from minicode.observability.logging import get_logger
 from minicode.memory import MemoryManager, MemoryScope
 
 logger = get_logger("agent_reflection")

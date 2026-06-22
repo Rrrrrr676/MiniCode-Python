@@ -11,7 +11,7 @@ from minicode.tty_app import (
 )
 import minicode.tui.input_handler as input_handler_module
 from minicode.context_manager import ContextManager
-from minicode.permissions import PermissionManager
+from minicode.safety.permissions import PermissionManager
 from minicode.session import FileCheckpoint, SessionData, SessionMetadata
 from minicode.tooling import ToolRegistry
 from minicode.tui.runtime_control import _ThrottledRenderer as RuntimeThrottledRenderer

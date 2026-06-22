@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from minicode.cost_tracker import calculate_cost
+from minicode.providers.cost import calculate_cost
 
 
 def test_calculate_cost_returns_float_for_known_model() -> None:

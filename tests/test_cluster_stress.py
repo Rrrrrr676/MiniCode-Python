@@ -20,7 +20,7 @@ except ImportError:
 
 from minicode.agent_intelligence import ErrorClassifier
 from minicode.agent_loop import run_agent_turn
-from minicode.agent_metrics import AgentMetricsCollector
+from minicode.observability.metrics import AgentMetricsCollector
 from minicode.context_manager import ContextManager
 from minicode.memory import MemoryManager, MemoryScope
 from minicode.tooling import ToolContext, ToolDefinition, ToolRegistry, ToolResult

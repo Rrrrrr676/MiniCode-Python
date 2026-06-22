@@ -12,8 +12,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from minicode.providers.fallbacks import configured_model_fallbacks, default_model_fallbacks
-from minicode.logging_config import get_logger
-from minicode.model_registry import (
+from minicode.observability.logging import get_logger
+from minicode.providers.registry import (
     ModelSelectionController,
     ModelSelectionSignal,
     BUILTIN_MODELS,

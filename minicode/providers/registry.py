@@ -472,14 +472,14 @@ def create_model_adapter(
         A ModelAdapter instance (AnthropicModelAdapter, OpenAIModelAdapter, or MockModelAdapter)
     """
     if force_mock or os.environ.get("MINI_CODE_MODEL_MODE") == "mock":
-        from minicode.mock_model import MockModelAdapter
+        from minicode.providers.mock import MockModelAdapter
         return MockModelAdapter()
 
     provider_config = build_provider_config(model, runtime)
 
     # OpenRouter / Custom / OpenAI all use OpenAI-compatible API
     if provider_config.is_openai_compatible:
-        from minicode.openai_adapter import OpenAIModelAdapter
+        from minicode.providers.openai import OpenAIModelAdapter
         # Inject provider config into runtime so the adapter can use it
         enriched_runtime = dict(runtime or {})
         enriched_runtime["model"] = provider_config.model
@@ -498,7 +498,7 @@ def create_model_adapter(
         return OpenAIModelAdapter(enriched_runtime, tools)
 
     # Anthropic
-    from minicode.anthropic_adapter import AnthropicModelAdapter
+    from minicode.providers.anthropic import AnthropicModelAdapter
     enriched = dict(runtime or {})
     enriched["model"] = provider_config.model
     if "baseUrl" not in enriched:

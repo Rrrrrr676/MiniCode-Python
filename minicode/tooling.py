@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Protocol
 
-from minicode.logging_config import get_logger, log_tool_execution
+from minicode.observability.logging import get_logger, log_tool_execution
 
 
 # ---------------------------------------------------------------------------

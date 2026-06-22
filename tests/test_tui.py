@@ -155,7 +155,7 @@ def test_collapse_command_collapses_tool_entries(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     import minicode.tui.input_handler as input_handler_module
-    from minicode.permissions import PermissionManager
+    from minicode.safety.permissions import PermissionManager
     from minicode.tui.state import ScreenState, TtyAppArgs
     from minicode.tui.types import TranscriptEntry
     from minicode.tooling import ToolRegistry

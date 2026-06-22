@@ -89,8 +89,8 @@ def _run(input_data: dict, context) -> ToolResult:
     - A turn limit
     - Result summarized for the parent context
     """
-    from minicode.model_registry import create_model_adapter
-    from minicode.permissions import PermissionManager
+    from minicode.providers.registry import create_model_adapter
+    from minicode.safety.permissions import PermissionManager
     from minicode.tools import create_default_tool_registry
     
     agent_type = input_data["agent_type"]

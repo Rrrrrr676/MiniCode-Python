@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING, Any, Callable
 
-from minicode.api_retry import (
+from minicode.providers.retry import (
     RETRYABLE_STATUS,
     calculate_backoff,
 )
@@ -227,7 +227,7 @@ class AnthropicModelAdapter:
                 if error.code not in RETRYABLE_STATUS or attempt >= max_retries:
                     break
                 # Use semantic error classification for adaptive backoff
-                from minicode.api_retry import classify_error
+                from minicode.providers.retry import classify_error
                 category = classify_error(error)
                 retry_after = _parse_retry_after_seconds(error.headers.get("retry-after"))
                 wait = calculate_backoff(attempt, retry_after=retry_after,
@@ -257,7 +257,7 @@ class AnthropicModelAdapter:
             # Update store with API call success and cost tracking
             if store:
                 # Calculate token usage and cost (with cache support)
-                from minicode.cost_tracker import calculate_cost
+                from minicode.providers.cost import calculate_cost
                 usage = data.get("usage", {})
                 input_tokens = usage.get("input_tokens", 0)
                 output_tokens = usage.get("output_tokens", 0)
@@ -407,7 +407,7 @@ class AnthropicModelAdapter:
 
         # Update store with streaming cost tracking
         if store:
-            from minicode.cost_tracker import calculate_cost
+            from minicode.providers.cost import calculate_cost
             cost_usd = calculate_cost(
                 model=self.runtime.get("model", ""),
                 input_tokens=stream_input_tokens,

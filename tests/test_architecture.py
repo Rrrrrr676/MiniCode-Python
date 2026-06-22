@@ -102,7 +102,7 @@ def test_runtime_never_imports_product_surfaces() -> None:
 def test_known_config_provider_context_cycle_is_absent() -> None:
     config_imports = _imports(PACKAGE_ROOT / "config" / "__init__.py")
     adapter_imports = _imports(PACKAGE_ROOT / "providers" / "openai.py")
-    assert "minicode.model_registry" not in config_imports
+    assert "minicode.providers.registry" not in config_imports
     assert "minicode.context_manager" not in adapter_imports
 
 

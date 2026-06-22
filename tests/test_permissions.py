@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-import minicode.permissions as permissions_module
-from minicode.permissions import PermissionManager, _classify_dangerous_command, _is_within_directory
+import minicode.safety.permissions as permissions_module
+from minicode.safety.permissions import PermissionManager, _classify_dangerous_command, _is_within_directory
 
 
 @pytest.fixture(autouse=True)

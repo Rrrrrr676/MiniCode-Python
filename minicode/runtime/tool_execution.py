@@ -8,7 +8,7 @@ import traceback
 from typing import Any, Callable
 
 from minicode.core.state import increment_tool_calls, set_busy, set_idle
-from minicode.logging_config import get_logger
+from minicode.observability.logging import get_logger
 from minicode.tooling import ToolContext, ToolRegistry, ToolResult
 
 

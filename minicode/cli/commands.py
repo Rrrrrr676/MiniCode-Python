@@ -744,7 +744,7 @@ def try_handle_local_command(
             runtime = load_runtime_config()
         except Exception as error:  # noqa: BLE001
             return f"runtime not configured: {error}"
-        from minicode.model_registry import detect_provider
+        from minicode.providers.registry import detect_provider
         provider = detect_provider(runtime["model"], runtime)
         auth_methods = []
         if runtime.get("authToken"):
@@ -771,7 +771,7 @@ def try_handle_local_command(
     if user_input == "/model":
         try:
             runtime = load_runtime_config()
-            from minicode.model_registry import format_model_status
+            from minicode.providers.registry import format_model_status
             return format_model_status(runtime["model"], runtime)
         except Exception as error:  # noqa: BLE001
             return f"runtime not configured: {error}"
@@ -779,21 +779,21 @@ def try_handle_local_command(
     if user_input.startswith("/model "):
         arg = user_input[len("/model "):].strip()
         if not arg:
-            from minicode.model_registry import format_model_list
+            from minicode.providers.registry import format_model_list
             return format_model_list()
         # Subcommands
         if arg in ("status", "info"):
             try:
                 runtime = load_runtime_config()
-                from minicode.model_registry import format_model_status
+                from minicode.providers.registry import format_model_status
                 return format_model_status(runtime["model"], runtime)
             except Exception as error:  # noqa: BLE001
                 return f"runtime not configured: {error}"
         if arg in ("list", "ls"):
-            from minicode.model_registry import format_model_list
+            from minicode.providers.registry import format_model_list
             return format_model_list()
         # Provider filter: /model anthropic, /model openrouter, etc.
-        from minicode.model_registry import Provider, format_model_list
+        from minicode.providers.registry import Provider, format_model_list
         for p in Provider:
             if arg.lower() == p.value:
                 return format_model_list(provider=p)

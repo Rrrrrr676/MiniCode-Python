@@ -25,8 +25,8 @@ from minicode.memory import (
     _tokenize,
 )
 from minicode.agent_loop import run_agent_turn
-from minicode.mock_model import MockModelAdapter
-from minicode.permissions import PermissionManager
+from minicode.providers.mock import MockModelAdapter
+from minicode.safety.permissions import PermissionManager
 from minicode.tools import create_default_tool_registry
 from minicode.prompt import build_system_prompt
 from minicode.context_manager import ContextManager

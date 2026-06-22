@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from minicode.cost_tracker import CostTracker
-from minicode.permissions import PermissionManager
+from minicode.providers.cost import CostTracker
+from minicode.safety.permissions import PermissionManager
 from minicode.session import AutosaveManager, SessionData
 from minicode.state import AppState, Store
 from minicode.tooling import ToolRegistry
