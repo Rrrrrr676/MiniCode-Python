@@ -22,23 +22,16 @@ ROOT_PYTHON_ALLOWLIST = {
 LEGACY_ROOT_FACADES = {
     "background_tasks.py",
     "cli_commands.py",
-    "domain_classifier.py",
     "history.py",
     "hooks.py",
     "install.py",
     "local_tool_shortcuts.py",
     "manage_cli.py",
     "mcp.py",
-    "memory_curator_agent.py",
-    "memory_injector.py",
-    "memory_pipeline.py",
-    "memory_reranker.py",
     "skills.py",
     "state.py",
-    "timeline_memory.py",
     "types.py",
     "user_profile.py",
-    "vector_memory.py",
     "workspace.py",
 }
 

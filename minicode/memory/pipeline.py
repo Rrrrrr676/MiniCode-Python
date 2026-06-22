@@ -79,19 +79,19 @@ class MemoryPipeline:
 
         # Reranker (LLM curation on read)
         if enable_reranker:
-            from minicode.memory_reranker import MemoryReranker
+            from minicode.memory.reranker import MemoryReranker
             self._reranker = MemoryReranker(model_adapter=model_adapter)
 
         # Injector (PID-controlled injection)
         if self._memory:
-            from minicode.memory_injector import MemoryInjector
+            from minicode.memory.injector import MemoryInjector
             self._injector = MemoryInjector(
                 memory_manager=self._memory,
                 reranker=self._reranker if self._reranker and self._reranker.enabled else None,
             )
 
         # Curator (background optimization)
-        from minicode.memory_curator_agent import MemoryCuratorAgent
+        from minicode.memory.curator import MemoryCuratorAgent
         self._curator = MemoryCuratorAgent(
             memory_manager=self._memory,
             model_adapter=model_adapter,
@@ -105,7 +105,7 @@ class MemoryPipeline:
         # Vector store — sparse TF-IDF always available, optional sentence-transformers
         if enable_vector:
             try:
-                from minicode.vector_memory import SparseVectorStore, VectorMemoryStore
+                from minicode.memory.vector import SparseVectorStore, VectorMemoryStore
                 self._vector_store = SparseVectorStore()  # Zero-dependency, always works
                 # Also try the optional dense backend
                 self._dense_store = VectorMemoryStore()
@@ -237,7 +237,7 @@ class MemoryPipeline:
                     task_description, top_k=max_results,
                 )
                 if vec_results:
-                    from minicode.vector_memory import merge_bm25_vector
+                    from minicode.memory.vector import merge_bm25_vector
                     entries = merge_bm25_vector(entries, vec_results)
             except Exception:
                 pass
@@ -431,7 +431,7 @@ class MemoryPipeline:
         self, current_files: list[str], task_description: str
     ) -> list[str]:
         try:
-            from minicode.domain_classifier import get_active_domain_values
+            from minicode.memory.domain import get_active_domain_values
             return get_active_domain_values(
                 current_files=current_files,
                 intent_text=task_description,

@@ -15,7 +15,7 @@ from typing import Any
 
 from minicode.control.intelligence import ToolSchedulerController, ToolSchedulingSignal
 from minicode.control.supervisor import CyberneticSupervisor
-from minicode.memory_injector import MemoryInjectionController, MemoryInjectionSignal
+from minicode.memory.injector import MemoryInjectionController, MemoryInjectionSignal
 from minicode.providers.registry import ModelSelectionController, ModelSelectionSignal
 from minicode.control.progress import ProgressController, ProgressSignal
 from minicode.control.verification import VerificationController, VerificationSignal

@@ -26,7 +26,7 @@ from minicode.runtime.intelligence import (
     ToolSchedulerController,
     ToolSchedulingSignal,
 )
-from minicode.memory_injector import (
+from minicode.memory.injector import (
     InjectedMemory,
     MemoryInjectionController,
     MemoryInjectionMode,

@@ -41,7 +41,7 @@ class ReflectionResult:
         domains: list[str] = []
         if context.get("files"):
             try:
-                from minicode.domain_classifier import get_active_domain_values
+                from minicode.memory.domain import get_active_domain_values
                 domains = get_active_domain_values(
                     current_files=context.get("files", []),
                     intent_text=self.task_summary,

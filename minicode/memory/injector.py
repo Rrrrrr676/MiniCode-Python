@@ -213,7 +213,7 @@ class MemoryInjector:
         active_domains = (signal.active_domains if signal else []) or []
         if not active_domains and current_files:
             try:
-                from minicode.domain_classifier import get_active_domain_values
+                from minicode.memory.domain import get_active_domain_values
                 active_domains = get_active_domain_values(
                     current_files=current_files,
                     intent_text=task_description,

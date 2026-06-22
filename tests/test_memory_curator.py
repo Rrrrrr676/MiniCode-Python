@@ -4,7 +4,7 @@ from __future__ import annotations
 import tempfile
 
 from minicode.memory import MemoryEntry, MemoryManager, MemoryScope, MemoryTier
-from minicode.memory_curator_agent import CuratorReport, MemoryCuratorAgent
+from minicode.memory.curator import CuratorReport, MemoryCuratorAgent
 
 
 def _make_entry(eid, content, domains=None, tier=None, tags=None, related=None):

@@ -42,7 +42,7 @@ from minicode.control.feedback import FeedbackController
 from minicode.control.feedforward import FeedforwardController
 from minicode.observability.logging import get_logger
 from minicode.memory import MemoryManager
-from minicode.memory_injector import (
+from minicode.memory.injector import (
     MemoryInjectionController,
 )
 from minicode.providers.registry import ModelSelectionController, ModelSelectionSignal
@@ -151,7 +151,7 @@ class CyberneticOrchestrator:
         context_usage: float = 0.0,
     ) -> None:
         """Initialize unified memory pipeline."""
-        from minicode.memory_pipeline import MemoryPipeline
+        from minicode.memory.pipeline import MemoryPipeline
 
         self.memory_pipeline = MemoryPipeline(memory_mgr)
         # Pass model adapter if available for reranker

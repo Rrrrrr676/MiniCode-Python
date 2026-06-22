@@ -49,7 +49,7 @@ from minicode.control.recovery import SelfHealingEngine
 from minicode.control.progress import ProgressSignal, ProgressAction
 
 # 记忆注入和模型选择控制
-from minicode.memory_injector import MemoryInjectionSignal, MemoryInjector
+from minicode.memory.injector import MemoryInjectionSignal, MemoryInjector
 from minicode.providers.registry import ModelSelectionSignal
 
 # 智能路由与自省 (Phase 3 导入)
@@ -610,7 +610,7 @@ def run_agent_turn(
             # 同时创建 Reranker（使用真实 LLM 做记忆策展）
             memory_reranker = None
             try:
-                from minicode.memory_reranker import MemoryReranker
+                from minicode.memory.reranker import MemoryReranker
                 # Use the agent's model for reranking (lightweight prompt, ~500 tokens)
                 memory_reranker = MemoryReranker(model_adapter=model)
             except Exception:

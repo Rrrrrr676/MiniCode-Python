@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 
 from minicode.runtime.reflection import ReflectionEngine, ReflectionResult
-from minicode.domain_classifier import (
+from minicode.memory.domain import (
     DomainType,
     classify,
     get_active_domain_values,
