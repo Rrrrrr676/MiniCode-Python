@@ -53,8 +53,8 @@ minicode/
   control/            # 控制回路、稳定性、验证与恢复
   runtime/            # Agent 单轮编排、生命周期、模型/工具执行、policy
   cli/                # 命令、管理、快捷方式、安装器
-  agent_loop.py       # 旧路径兼容门面
-  session.py          # 旧路径兼容门面
+  agent_loop.py       # 稳定 Runtime 转发入口
+  session.py          # 稳定 Persistence 兼容入口
   tooling.py          # 稳定工具协议与执行
   tui/                # 终端产品面
   web/                # Web API、事件桥接和静态资源服务
@@ -78,8 +78,8 @@ web/
 - `runtime` 不得导入 `minicode.tui` 或 `minicode.web`；
 - 领域包不得反向导入 `runtime.runner`；
 - 跨包调用使用目标包公共入口，不新增跨包 `_private_name` 导入；
-- `config` 可以依赖纯 `providers.spec`，Provider 实现不得反向依赖完整配置模块；
-- Provider token 估算只依赖 `context.tokens`，不得依赖 `ContextManager`；
+- `config` 和 Provider 共同依赖 `core.provider_spec`，不得互相形成回边；
+- Provider token 估算只依赖 `core.tokens`，不得依赖 Context package；
 - TUI 和 Web 只消费核心 callback/事件，不复制 Agent 决策；
 - `minicode/web/` 可以依赖核心 Runtime，但核心 Runtime 不反向依赖 Web；
 - `web/` 不直接读取文件系统、配置文件或 API Key；
@@ -87,11 +87,22 @@ web/
 
 ### 2.4 兼容门面规则
 
-- 稳定旧路径在迁移期必须保留，并用显式 `__all__` 描述公共 API；
-- 若旧路径存在 monkeypatch 或模块级可变状态，兼容层必须与新实现共享模块对象，不能只复制名称；
+- 根目录 Python 文件必须严格匹配 `tests/test_root_package_surface.py` 白名单；
+- 仅 `agent_loop.py` 与 `session.py` 是明确稳定兼容入口，不得恢复已删除旧门面；
+- 测试 monkeypatch 必须指向实际查找位置，不得为了测试恢复旧定义位置；
 - dataclass、Enum、TypedDict 移动前必须验证旧 JSON/session/pickle 风险；
 - 删除兼容层前必须完成全仓导入与 monkeypatch 审计；
-- 新实现只放在目标 package，根兼容门面不得继续增长业务逻辑。
+- 禁止 import hook、集中 `sys.modules` 别名或隐藏目录伪装根目录清理；
+- 新实现只放在目标 package，稳定入口不得增长领域业务逻辑。
+
+### 2.5 大模块职责规则
+
+- Timeline 规则按 dates/numeric/travel/events 分离，Reasoner 只做组合；
+- Memory 的模型、存储、检索、prompt 与 manager 分离；
+- Session 的 models、storage、rewind、autosave、formatters 分离；
+- Compaction dispatcher 只选择策略，budget/micro/reactive/service 独立；
+- `config.__init__`、`cli.commands` 只能聚合公共 API；
+- `runtime.runner` 负责单轮时序，组合初始化、prelude、control apply 和 coda 放入独立模块。
 
 ## 3. Python 代码规范
 

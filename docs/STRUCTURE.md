@@ -1,67 +1,71 @@
 # MiniCode Python 包结构
 
-> 规范实现位于仓库根目录 `minicode/`。本文按 2026-06-22 的包治理结果维护。
+> 规范实现位于 `minicode/`。本文按 2026-06-22 第二阶段架构治理结果维护。
 
-## 稳定入口与兼容层
+## 稳定入口
 
-`main.py`、`headless.py`、`tty_app.py`、`tooling.py`、`tools/`、`tui/`、`web/` 保持稳定产品入口或既有边界。根目录其余同名模块主要是旧 Python 导入路径的兼容门面；兼容门面通过模块身份别名保持 monkeypatch 和模块级可变状态语义。
+根目录 Python 文件严格限定为：
 
-稳定入口：
+```text
+minicode/
+├── __init__.py
+├── main.py
+├── headless.py
+├── tty_app.py
+├── tooling.py
+├── agent_loop.py
+└── session.py
+```
 
-- `minicode-py` → `minicode.main:main`
-- `minicode-headless` → `minicode.headless:main`
-- `minicode-web` → `minicode.web.cli:main`
-- `minicode.agent_loop.run_agent_turn`
-- `minicode.memory.MemoryManager`
-- `minicode.session.SessionData`
-- `minicode.config.load_runtime_config`
+稳定入口与 API：
+
+- `minicode-py`、`minicode-headless`、`minicode-web`；
+- `minicode.agent_loop.run_agent_turn`；
+- `minicode.memory.MemoryManager`；
+- `minicode.session.SessionData`；
+- `minicode.config.load_runtime_config`。
+
+除 `agent_loop.py` 和 `session.py` 两个明确兼容入口外，旧根路径已退场。仓库内部必须直接导入目标 package。
 
 ## 当前包树
 
 ```text
 minicode/
-├── main.py, headless.py, tty_app.py, agent_loop.py
-├── tooling.py, tools/, tui/, web/
-├── core/
-│   ├── types.py, state.py, events.py, errors.py, workspace.py
-├── config/
-│   ├── __init__.py, paths.py, settings.py, providers.py, mcp.py, diagnostics.py
-├── providers/
-│   ├── spec.py, registry.py, openai.py, anthropic.py, retry.py
-│   ├── switching.py, fallbacks.py, cost.py, mock.py
+├── core/                 # 基础类型、状态、意图、token、Provider 纯原语
+├── config/               # paths/settings/providers/mcp/diagnostics
+├── providers/            # 注册、适配器、重试、切换、成本、Mock
 ├── context/
-│   ├── tokens.py, manager.py, prompt.py, prompt_pipeline.py
-│   ├── layered.py, working.py
+│   ├── manager.py, prompt.py, prompt_pipeline.py, layered.py, working.py
 │   └── compaction/
-│       ├── dispatcher.py, models.py, budgets.py, reactive.py
-│       ├── micro.py, micro_legacy.py, circuit_breaker.py
+│       ├── models.py, budgets.py, micro.py, reactive.py
+│       ├── session_memory.py, dispatcher.py, service.py
+│       └── micro_legacy.py, circuit_breaker.py
 ├── memory/
-│   ├── manager.py, models.py, storage.py, retrieval.py, prompt.py
-│   ├── pipeline.py, curator.py, injector.py, reranker.py, vector.py, domain.py
+│   ├── models.py, storage.py, retrieval.py, retrieval_manager.py
+│   ├── manager.py, prompt.py, pipeline.py, curator.py, injector.py
 │   └── timeline/
-│       ├── reasoner.py, models.py, extractors.py, index.py, rules/
+│       ├── models.py, extractors.py, index.py, reasoner.py
+│       ├── numeric_reasoning.py, event_reasoning.py
+│       └── rules/{dates.py,numeric.py,travel.py,events.py}
 ├── persistence/
-│   ├── session_storage.py, session_models.py, rewind.py, formatters.py
-│   ├── history.py, user_profile.py
-├── safety/
-│   ├── permissions.py, auto_mode.py, file_review.py
-├── integrations/
-│   ├── mcp.py, skills.py, hooks.py, background_tasks.py
-├── observability/
-│   ├── logging.py, metrics.py, decision_audit.py
-├── control/
-│   ├── orchestrator.py, supervisor.py, feedback.py, feedforward.py
-│   ├── predictive.py, context.py, cost.py, stability.py, verification.py
-│   ├── recovery.py, adaptive_pid.py, state_observer.py, decoupling.py
-│   ├── progress.py, ablation.py
+│   ├── session_models.py, session_storage.py, rewind.py
+│   ├── autosave.py, formatters.py, history.py, user_profile.py
+├── safety/               # permissions/auto_mode/file_review
+├── integrations/         # MCP/skills/hooks/background tasks/product surfaces
+├── observability/        # logging/metrics/decision audit
+├── control/              # 控制、稳定性、验证、恢复、调度智能
 ├── runtime/
-│   ├── runner.py, lifecycle.py, model_execution.py, tool_execution.py, policy.py
-│   ├── kernel.py, intelligence.py, routing.py, reflection.py, pipeline.py
-│   ├── smart_routing.py, intent.py, capabilities.py, profiles.py
-│   ├── profile_eval.py, release_readiness.py, product_surfaces.py
+│   ├── runner.py, composition.py, prelude.py, coda.py
+│   ├── control_runtime.py, lifecycle.py, model_execution.py
+│   ├── tool_execution.py, policy.py, kernel.py
+│   ├── routing.py, smart_routing.py, intent.py, pipeline.py
 │   └── tasks/{object.py,graph.py,tracker.py}
-└── cli/
-    ├── commands.py, management.py, shortcuts.py, install.py
+├── cli/
+│   ├── commands.py, registry.py, matching.py, handlers.py, formatters.py
+│   ├── management.py, shortcuts.py, install.py
+├── tools/                # 内置工具
+├── tui/                  # 终端产品面
+└── web/                  # Web API、Runner、事件桥接
 ```
 
 ## 依赖方向
@@ -78,47 +82,42 @@ runtime
 main / headless / cli / tui / web
 ```
 
-`tests/test_architecture.py` 自动检查：
+共享的纯 Provider 识别、Intent 模型和 token 估算位于 `core`。控制层需要的调度智能位于 `control.intelligence`，反思实现位于 `memory.reflection`，避免低层反向依赖 Runtime。
 
-- 分层 package 不形成循环；
-- `core` 不导入非 core 的 MiniCode 模块；
-- `runtime` 不导入 `tui` 或 `web`；
-- 配置、Provider、OpenAI adapter、Context 的已知循环边不会恢复；
-- 旧 core 导入和新 core 对象保持身份一致。
+## 架构护栏
 
-## Runtime 拆分
+`tests/test_root_package_surface.py` 和 `tests/test_architecture.py` 自动检查：
 
-`agent_loop.py` 是 9 行稳定门面。`runtime.runner.run_agent_turn()` 只负责总编排，以下职责已独立：
+- 根目录 Python 文件严格匹配白名单；
+- 内部模块不导入已删除的 71 个旧根路径；
+- 分层 package 无循环；
+- `core` 只依赖标准库和 core；
+- Runtime 不导入 TUI/Web；
+- 跨 package 不导入私有名称；
+- 必须保留的稳定 API 仍可导入。
 
-- `runtime.lifecycle`：稳定任务状态消息；
-- `runtime.model_execution`：Provider 调用兼容、失败摘要、fallback 分类；
-- `runtime.tool_execution`：单工具超时、状态、callback 和错误收口；
-- `runtime.policy`：上下文阻塞阈值与熔断压缩；
-- `runtime.kernel`：turn policy、widen、verification 和终态决策。
+## 大模块拆分结果
 
-## 数据与兼容性
+| 原模块 | 拆分前 | 当前集中模块 | 主要职责 |
+|---|---:|---:|---|
+| `memory/timeline/reasoner.py` | 3,513 | 183 | 规则组合与公开 Reasoner |
+| `memory/manager.py` | 1,986 | 521 | 记忆业务编排与维护 |
+| `persistence/session_storage.py` | 1,378 | 420 | session/delta I/O |
+| `context/compaction/dispatcher.py` | 1,150 | 288 | Auto Compact 策略分发 |
+| `config/__init__.py` | 798 | 16 | 显式公共 API |
+| `cli/commands.py` | 862 | 12 | CLI 公共 API 聚合 |
+| `runtime/runner.py` | 2,052 | 1,125 | 单轮时序与 recurrent loop |
 
-- `minicode.memory` 已转换为 package，并显式导出原 Memory API；历史上被测试和向量检索使用的私有 helper 在兼容窗口内保留。
-- `minicode.session` 保留路径同步门面，支持旧测试/集成 monkeypatch `MINI_CODE_DIR`、`SESSIONS_DIR`；数据模型仍由 JSON 默认值保证旧文件兼容。
-- `minicode.context_manager` 保留 token、状态持久化和 `MINI_CODE_DIR` monkeypatch 转发。
-- 根兼容门面与目标实现共享模块对象，旧路径 monkeypatch 不会失效。
+## 数据兼容
 
-## 已知结构债务
+- `minicode.session` 继续同步 `MINI_CODE_DIR`/`SESSIONS_DIR`，旧 session、delta、checkpoint 和 rewind 格式不变；
+- `minicode.memory` 继续导出稳定 Memory API；
+- `minicode.config` 只聚合显式 API，环境变量、设置优先级和诊断语义保持；
+- wheel 可在非仓库 cwd 下导入稳定 API 并运行三个 console scripts。
 
-本轮已完成包归类、循环治理和 Runtime 真拆分；以下超大实现仍需后续批次做物理职责拆分，当前仅建立了目标子模块 API 边界：
+## 测试与构建
 
-- `memory/timeline/reasoner.py`
-- `memory/manager.py`
-- `persistence/session_storage.py`
-- `context/compaction/dispatcher.py`
-- `config/__init__.py`
-- `cli/commands.py`
-
-这些项目在 `MC-ARCH-PKG-20260622_IMPLEMENTATION_REPORT.md` 中标为未完成，不能据此宣布任务书 Definition of Done 已全部满足。
-
-## 测试与配置
-
-- `tests/`：pytest 全量与子系统测试；`tests/test_architecture.py` 是依赖护栏。
-- `web/`：React/Vite 浏览器端，保持 REST/WebSocket 协议边界。
-- `pyproject.toml`：包、可选依赖与三个 console scripts。
+- `tests/`：pytest 单元、集成、压力、架构与 Web backend 测试；
+- `web/`：React/Vite 前端，REST/WebSocket 协议保持；
+- `pyproject.toml`：Python 包、可选依赖与三个 console scripts；
 - `ts-src/`：TypeScript 参考实现，不属于 Python Runtime 依赖。
