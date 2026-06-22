@@ -51,7 +51,7 @@ env PATH=/Users/xiatian/python/projects/MiniCode-Python/.venv/bin:/usr/bin:/bin 
 - 0 failed / 0 errors；
 - 0 skipped / 0 xfailed；
 - 1 warning；
-- 12.58s。
+- 13.92s。
 
 唯一 warning 为 FastAPI TestClient 暴露的 Starlette/httpx 弃用提示，与本次重构无关。
 
@@ -74,8 +74,8 @@ npm run build
 
 结果：
 
-- Vitest：7 files / 28 tests passed，819ms；
-- TypeScript/Vite：通过，275 modules transformed，93ms；
+- Vitest：7 files / 28 tests passed，817ms；
+- TypeScript/Vite：通过，275 modules transformed，82ms；
 - 产物：CSS 19.68 kB，JS 380.82 kB。
 
 ## 5. Wheel 与非仓库 cwd
