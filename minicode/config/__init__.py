@@ -189,7 +189,7 @@ def describe_provider_channel(
     runtime = runtime or {}
     provider_key = (provider_name or "").strip().lower()
     if not provider_key:
-        from minicode.model_registry import detect_provider
+        from minicode.providers.spec import detect_provider
 
         provider_key = detect_provider(
             str(runtime.get("model", "")).strip(),
@@ -234,7 +234,7 @@ def describe_fallback_guidance(
     runtime = runtime or {}
     provider_key = (provider_name or "").strip().lower()
     if not provider_key:
-        from minicode.model_registry import detect_provider
+        from minicode.providers.spec import detect_provider
 
         provider_key = detect_provider(
             str(current_model or runtime.get("model", "")).strip(),
@@ -308,17 +308,17 @@ def _suggest_model_name(typed: str) -> str:
     """根据输入建议最接近的合法模型名称"""
     if not typed:
         return ""
-    
+
     # 简单的前缀匹配
     for model in KNOWN_MODELS:
         if model.startswith(typed.lower()):
             return model
-    
+
     # 模糊匹配：包含输入字符的模型
     for model in KNOWN_MODELS:
         if typed.lower() in model:
             return model
-    
+
     return ""
 
 
@@ -590,7 +590,7 @@ def validate_provider_runtime(runtime: dict[str, Any]) -> list[str]:
     OpenAI-compatible credentials must be present; likewise for Anthropic,
     OpenRouter, and custom endpoints.
     """
-    from minicode.model_registry import Provider, detect_provider
+    from minicode.providers.spec import Provider, detect_provider
 
     model = str(runtime.get("model", "")).strip()
     provider = detect_provider(model, runtime)
@@ -644,7 +644,7 @@ def save_scoped_mcp_servers(scope: str, servers: dict[str, Any], cwd: str | Path
 
 def validate_config(cwd: str | Path | None = None) -> tuple[bool, list[str]]:
     """验证配置完整性，返回 (是否有效，错误列表)
-    
+
     检查项：
     1. 模型名称是否配置
     2. API key 是否配置
@@ -653,11 +653,11 @@ def validate_config(cwd: str | Path | None = None) -> tuple[bool, list[str]]:
     """
     errors: list[str] = []
     warnings: list[str] = []
-    
+
     try:
         config = load_runtime_config(cwd)
         errors.extend(validate_provider_runtime(config))
-        
+
         # 检查模型名称拼写
         model = config.get("model", "")
         if model and not any(model.lower() == km.lower() for km in KNOWN_MODELS):
@@ -670,18 +670,18 @@ def validate_config(cwd: str | Path | None = None) -> tuple[bool, list[str]]:
                 warnings.append(
                     f"Unknown model '{model}'. Known models: {', '.join(KNOWN_MODELS[:3])}..."
                 )
-        
+
         # 检查 MCP 配置
         mcp_servers = config.get("mcpServers", {})
         for name, server in mcp_servers.items():
             if not server.get("command"):
                 errors.append(f"MCP server '{name}' has no command configured")
-        
+
         return len(errors) == 0, errors + warnings
-        
+
     except RuntimeError as e:
         error_msg = str(e)
-        
+
         # 提供友好的错误消息
         if "No model configured" in error_msg:
             suggestion = _suggest_model_name(os.environ.get("MINI_CODE_MODEL", ""))
@@ -696,7 +696,7 @@ def validate_config(cwd: str | Path | None = None) -> tuple[bool, list[str]]:
                 help_msg += f"\n  Did you mean: {suggestion}?\n"
             help_msg += f"\n  Known models: {', '.join(KNOWN_MODELS[:3])}..."
             errors.append(help_msg)
-            
+
         elif "No auth configured" in error_msg:
             help_msg = (
                 f"Error: {error_msg}\n\n"
@@ -711,7 +711,7 @@ def validate_config(cwd: str | Path | None = None) -> tuple[bool, list[str]]:
             errors.append(help_msg)
         else:
             errors.append(str(e))
-        
+
         return False, errors
     except Exception as e:
         return False, [f"Unexpected error: {e}"]
@@ -720,9 +720,9 @@ def validate_config(cwd: str | Path | None = None) -> tuple[bool, list[str]]:
 def format_config_diagnostic(cwd: str | Path | None = None) -> str:
     """格式化配置诊断信息"""
     is_valid, messages = validate_config(cwd)
-    
+
     lines = ["Configuration Diagnostics", "=" * 40, ""]
-    
+
     if is_valid:
         lines.append("Status: OK")
         if messages:
@@ -736,7 +736,7 @@ def format_config_diagnostic(cwd: str | Path | None = None) -> str:
         lines.append("Errors:")
         for msg in messages:
             lines.append(f"  [ERROR] {msg}")
-    
+
     # 显示当前配置摘要
     try:
         config = load_runtime_config(cwd)
@@ -747,7 +747,7 @@ def format_config_diagnostic(cwd: str | Path | None = None) -> str:
         lines.append(f"  Model: {model_name}")
 
         # Show provider info
-        from minicode.model_registry import detect_provider, Provider
+        from minicode.providers.spec import Provider, detect_provider
         provider = detect_provider(model_name, config)
         lines.append(f"  Provider: {provider.value}")
         lines.append(f"  Channel: {describe_provider_channel(config, provider.value)}")
@@ -794,5 +794,5 @@ def format_config_diagnostic(cwd: str | Path | None = None) -> str:
             lines.append(f"  Response Verbosity: {config.get('responseVerbosity')}")
     except Exception:
         pass
-    
+
     return "\n".join(lines)

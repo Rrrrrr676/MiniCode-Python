@@ -672,7 +672,7 @@ class MemoryEntry:
 
     def invalidate_tokens(self) -> None:
         self._cached_tokens = None
-    
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -689,7 +689,7 @@ class MemoryEntry:
             "last_accessed": self.last_accessed,
             "related_to": self.related_to,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MemoryEntry":
         """Create from dictionary."""
@@ -760,7 +760,7 @@ class MemoryFile:
     def size_bytes(self) -> int:
         """Estimate size in bytes."""
         return sum(len(e.content) for e in self.entries)
-    
+
     def add_entry(self, entry: MemoryEntry) -> None:
         """Add entry, respecting limits. Maintains indices incrementally."""
         self._ensure_cache_valid()
@@ -776,7 +776,7 @@ class MemoryFile:
         self._category_index[cat].append(entry)
         self._tokens_cache[entry.id] = entry.get_tokens()
         self._enforce_limits()
-    
+
     def update_entry(self, entry_id: str, content: str) -> bool:
         """Update existing entry using index."""
         self._ensure_cache_valid()
@@ -788,7 +788,7 @@ class MemoryFile:
         entry.invalidate_tokens()
         self._tokens_cache[entry.id] = entry.get_tokens()
         return True
-    
+
     def delete_entry(self, entry_id: str) -> bool:
         """Delete entry using index."""
         self._ensure_cache_valid()
@@ -805,12 +805,12 @@ class MemoryFile:
             self._category_index[cat].remove(entry)
         self._tokens_cache.pop(entry_id, None)
         return True
-    
+
     def get_entries_by_category(self, category: str) -> list[MemoryEntry]:
         """Get entries filtered by category using index."""
         self._ensure_cache_valid()
         return list(self._category_index.get(category, []))
-    
+
     def search(self, query: str, active_domains: list[str] | None = None) -> list[MemoryEntry]:
         """Search entries by keyword with BM25 + domain relevance scoring.
 
@@ -896,21 +896,21 @@ class MemoryFile:
         for _, entry in scored[:10]:
             entry.usage_count += 1
         return [entry for _, entry in scored]
-    
+
     def _enforce_limits(self) -> None:
         """Remove oldest entries if exceeding limits."""
         # Check entry count
         while len(self.entries) > self.max_entries:
             self.entries.pop(0)  # Remove oldest
-        
+
         # Check size
         while self.size_bytes > self.max_size_bytes and self.entries:
             self.entries.pop(0)
-    
+
     def format_as_markdown(self, include_header: bool = True) -> str:
         """Format as MEMORY.md content."""
         lines = []
-        
+
         if include_header:
             scope_names = {
                 MemoryScope.USER: "User Memory",
@@ -921,14 +921,14 @@ class MemoryFile:
             lines.append("")
             lines.append(f"*Last updated: {time.strftime('%Y-%m-%d %H:%M')}*")
             lines.append("")
-        
+
         # Group by category
         categories: dict[str, list[MemoryEntry]] = {}
         for entry in self.entries:
             if entry.category not in categories:
                 categories[entry.category] = []
             categories[entry.category].append(entry)
-        
+
         for category, entries in categories.items():
             lines.append(f"## {category.title()}")
             lines.append("")
@@ -936,7 +936,7 @@ class MemoryFile:
                 tags_str = f" `{' '.join(entry.tags)}`" if entry.tags else ""
                 lines.append(f"- {entry.content}{tags_str}")
             lines.append("")
-        
+
         return "\n".join(lines)
 
 
@@ -950,12 +950,12 @@ class MemoryPaths:
     user_memory: Path
     project_memory: Path
     local_memory: Path
-    
+
     @classmethod
     def for_workspace(cls, workspace: str) -> "MemoryPaths":
         """Create memory paths for a workspace."""
         workspace_path = Path(workspace)
-        
+
         return cls(
             user_memory=MINI_CODE_DIR / "memory",
             project_memory=workspace_path / ".mini-code-memory",
@@ -965,7 +965,7 @@ class MemoryPaths:
 
 class MemoryManager:
     """Manages layered memory system."""
-    
+
     def __init__(
         self,
         workspace: str | Path | None = None,
@@ -985,13 +985,13 @@ class MemoryManager:
             MemoryScope.LOCAL: MemoryFile(scope=MemoryScope.LOCAL),
         }
         self._load_all()
-    
+
     def _load_all(self) -> None:
         """Load all memory files."""
         for scope in MemoryScope:
             self._load_scope(scope)
             self._auto_recover_scope(scope)
-    
+
     def _auto_recover_scope(self, scope: MemoryScope) -> None:
         """Check integrity and auto-recover if issues are found.
 
@@ -1011,7 +1011,7 @@ class MemoryManager:
                 len(result["issues"]),
             )
             self._recover_scope(scope)
-    
+
     def _recover_scope(self, scope: MemoryScope) -> None:
         """Attempt to recover a scope with integrity issues.
 
@@ -1067,22 +1067,22 @@ class MemoryManager:
             removed_count,
             fixed_count,
         )
-    
+
     def _load_scope(self, scope: MemoryScope) -> None:
         """Load memory file for a scope."""
         path = self._get_scope_path(scope)
         memory_md = path / "MEMORY.md"
         memory_json = path / "memory.json"
-        
+
         if not memory_md.exists() and not memory_json.exists():
             return
-        
+
         # Load JSON metadata if exists
         if memory_json.exists():
             try:
                 raw_text = memory_json.read_text(encoding="utf-8")
                 data = json.loads(raw_text)
-                
+
                 is_valid, errors = _validate_memory_data(data)
                 if is_valid:
                     for entry_data in data.get("entries", []):
@@ -1112,31 +1112,31 @@ class MemoryManager:
                 logger.error(
                     "Missing key in scope %s data: %s", scope.value, e
                 )
-        
+
         # Load from MEMORY.md
         if memory_md.exists():
             content = memory_md.read_text(encoding="utf-8")
             self._parse_memory_md(content, scope)
-    
+
     def _parse_memory_md(self, content: str, scope: MemoryScope) -> None:
         """Parse MEMORY.md file into entries."""
         lines = content.split("\n")
         current_category = "general"
         entry_counter = 0
-        
+
         for line in lines:
             line = line.strip()
-            
+
             # Skip headers and metadata
             if line.startswith("#") or line.startswith("*") or not line:
                 if line.startswith("## "):
                     current_category = line[3:].strip().lower()
                 continue
-            
+
             # Parse list items
             if line.startswith("- "):
                 entry_content = line[2:]
-                
+
                 # Extract tags
                 tags = []
                 if "`" in entry_content:
@@ -1145,7 +1145,7 @@ class MemoryManager:
                     for tag_match in tag_matches:
                         tags.extend(tag_match.split())
                     entry_content = re.sub(r"`[^`]+`", "", entry_content).strip()
-                
+
                 entry_counter += 1
                 entry = MemoryEntry(
                     id=f"{scope.value}-{entry_counter}",
@@ -1158,7 +1158,7 @@ class MemoryManager:
         # Rebuild indices after Markdown-based loading
         if self.memories[scope].entries:
             self.memories[scope]._rebuild_indices()
-    
+
     def _get_scope_path(self, scope: MemoryScope) -> Path:
         """Get path for memory scope."""
         if scope == MemoryScope.USER:
@@ -1167,12 +1167,12 @@ class MemoryManager:
             return self.paths.project_memory
         else:
             return self.paths.local_memory
-    
+
     def _ensure_scope_path(self, scope: MemoryScope) -> None:
         """Ensure directory exists for scope."""
         path = self._get_scope_path(scope)
         path.mkdir(parents=True, exist_ok=True)
-    
+
     def add_entry(
         self,
         scope: MemoryScope,
@@ -1216,14 +1216,14 @@ class MemoryManager:
         self.memories[scope].add_entry(entry)
         self._save_scope(scope)
         return entry
-    
+
     def update_entry(self, scope: MemoryScope, entry_id: str, content: str) -> bool:
         """Update an existing entry."""
         if self.memories[scope].update_entry(entry_id, content):
             self._save_scope(scope)
             return True
         return False
-    
+
     def delete_entry(self, scope: MemoryScope, entry_id: str) -> bool:
         """Delete an entry."""
         if self.memories[scope].delete_entry(entry_id):
@@ -1364,7 +1364,7 @@ class MemoryManager:
         recency_bonus = 1.0 / (1.0 + age_hours / 24.0) * 0.5
 
         return bm25 + substring_score + tag_score + usage_bonus + recency_bonus
-    
+
     def get_relevant_context(
         self,
         max_entries: int = 20,
@@ -1372,11 +1372,11 @@ class MemoryManager:
         query: str | None = None,
     ) -> str:
         """Get relevant memory context for system prompt injection.
-        
+
         Returns formatted MEMORY.md content from all scopes,
         respecting token limits.
         """
-        from minicode.context_manager import estimate_tokens
+        from minicode.context.tokens import estimate_tokens
 
         query = (query or "").strip()
         if query:
@@ -1407,19 +1407,19 @@ class MemoryManager:
             if scoped_parts:
                 return "\n\n".join(scoped_parts)
             return ""
-        
+
         parts = []
         total_tokens = 0
-        
+
         # Priority order: LOCAL > PROJECT > USER
         for scope in [MemoryScope.LOCAL, MemoryScope.PROJECT, MemoryScope.USER]:
             memory = self.memories[scope]
             if not memory.entries:
                 continue
-            
+
             formatted = memory.format_as_markdown(include_header=True)
             tokens = estimate_tokens(formatted)
-            
+
             if total_tokens + tokens <= max_tokens:
                 parts.append(formatted)
                 total_tokens += tokens
@@ -1429,21 +1429,21 @@ class MemoryManager:
                 partial_entries = memory.entries[-max_entries:]
                 partial_memory = MemoryFile(scope=scope, entries=partial_entries)
                 formatted = partial_memory.format_as_markdown(include_header=True)
-                
+
                 if estimate_tokens(formatted) <= remaining_tokens:
                     parts.append(formatted)
                 break
-        
+
         if not parts:
             return ""
-        
+
         return "\n\n".join(parts)
-    
+
     def _save_scope(self, scope: MemoryScope) -> None:
         """Save memory to disk (atomic write to prevent corruption)."""
         path = self._get_scope_path(scope)
         self._ensure_scope_path(scope)
-        
+
         # Save JSON metadata (atomic: write to temp, then replace)
         memory_json = path / "memory.json"
         data = {
@@ -1452,15 +1452,15 @@ class MemoryManager:
             "entries": [e.to_dict() for e in self.memories[scope].entries],
         }
         self._atomic_write(memory_json, json.dumps(data, indent=2, ensure_ascii=False))
-        
+
         # Also update MEMORY.md for human readability (atomic)
         memory_md = path / "MEMORY.md"
         self._atomic_write(memory_md, self.memories[scope].format_as_markdown())
-    
+
     @staticmethod
     def _atomic_write(target: Path, content: str) -> None:
         """Write content atomically: write to temp file, then os.replace().
-        
+
         This prevents data corruption if the process is killed mid-write
         or if multiple instances write to the same file concurrently.
         """
@@ -1481,7 +1481,7 @@ class MemoryManager:
             except OSError:
                 pass
             raise
-    
+
     def get_stats(self) -> dict[str, Any]:
         """Get memory statistics."""
         return {
@@ -1492,7 +1492,7 @@ class MemoryManager:
             }
             for scope, memory in self.memories.items()
         }
-    
+
     def format_stats(self) -> str:
         """Format memory stats for display with tier and domain breakdown."""
         from collections import Counter
@@ -1542,7 +1542,7 @@ class MemoryManager:
             lines.append(f"Curator Insights: {insight_count} synthesized")
 
         return "\n".join(lines)
-    
+
     def clear_scope(self, scope: MemoryScope) -> None:
         """Clear all entries in a scope."""
         self.memories[scope] = MemoryFile(scope=scope)
@@ -1934,10 +1934,10 @@ def inject_memory_into_prompt(
 ) -> str:
     """Inject memory context into system prompt."""
     memory_context = memory_manager.get_relevant_context(max_tokens=max_tokens)
-    
+
     if not memory_context:
         return system_prompt
-    
+
     return f"""{system_prompt}
 
 ## Project Memory & Context

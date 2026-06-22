@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,23 @@ class _ProviderUnavailableModel(ModelAdapter):
         raise RuntimeError(
             "No available channel for model deepseek-v4-pro[1m] under group cc"
         )
+
+
+def test_headless_main_help_does_not_start_runtime(monkeypatch, capsys) -> None:
+    import minicode.headless
+
+    monkeypatch.setattr(sys, "argv", ["minicode-headless", "--help"])
+    monkeypatch.setattr(
+        minicode.headless,
+        "run_headless",
+        lambda *args, **kwargs: pytest.fail("help must not start the runtime"),
+    )
+
+    minicode.headless.main()
+
+    output = capsys.readouterr().out
+    assert "usage: minicode-headless" in output
+    assert "--allow-edits" in output
 
 
 def test_run_headless_forwards_runtime_to_agent_turn(monkeypatch, tmp_path: Path) -> None:

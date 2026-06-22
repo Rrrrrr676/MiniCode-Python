@@ -1,6 +1,6 @@
 # MiniCode Python 开发规范
 
-> 生效日期：2026-06-19
+> 生效日期：2026-06-22
 > 适用范围：仓库根目录下的 Python Runtime、TUI、Headless、Web、测试与文档。
 
 本文使用以下约束词：
@@ -41,10 +41,21 @@
 
 ```text
 minicode/
-  agent_loop.py       # Agent 编排，不包含具体 UI 渲染
-  tooling.py          # 工具协议与执行
-  permissions.py      # 权限判定
-  session.py          # 会话持久化
+  core/               # 标准库基础类型、状态、事件、错误、工作区边界
+  config/             # 路径、设置、Provider/MCP 配置和诊断
+  providers/          # Provider 纯定义、注册、适配、重试、切换
+  context/            # token、上下文、prompt 与 compaction
+  memory/             # 记忆模型、存储、检索、注入与 timeline
+  persistence/        # session、rewind、history、user profile
+  safety/             # 权限、auto mode、文件审查
+  integrations/       # MCP、skills、hooks、background tasks
+  observability/      # 日志、指标、决策审计
+  control/            # 控制回路、稳定性、验证与恢复
+  runtime/            # Agent 单轮编排、生命周期、模型/工具执行、policy
+  cli/                # 命令、管理、快捷方式、安装器
+  agent_loop.py       # 旧路径兼容门面
+  session.py          # 旧路径兼容门面
+  tooling.py          # 稳定工具协议与执行
   tui/                # 终端产品面
   web/                # Web API、事件桥接和静态资源服务
   tools/              # 内置工具
@@ -63,11 +74,24 @@ web/
 
 ### 2.3 边界规则
 
-- `agent_loop.py` 不得导入 `minicode.tui` 或前端模块；
+- `core` 只能依赖 Python 标准库或 `core` 内部模块；
+- `runtime` 不得导入 `minicode.tui` 或 `minicode.web`；
+- 领域包不得反向导入 `runtime.runner`；
+- 跨包调用使用目标包公共入口，不新增跨包 `_private_name` 导入；
+- `config` 可以依赖纯 `providers.spec`，Provider 实现不得反向依赖完整配置模块；
+- Provider token 估算只依赖 `context.tokens`，不得依赖 `ContextManager`；
 - TUI 和 Web 只消费核心 callback/事件，不复制 Agent 决策；
 - `minicode/web/` 可以依赖核心 Runtime，但核心 Runtime 不反向依赖 Web；
 - `web/` 不直接读取文件系统、配置文件或 API Key；
 - TypeScript CLI 参考实现继续放在 `ts-src/`，浏览器前端不得混入该目录。
+
+### 2.4 兼容门面规则
+
+- 稳定旧路径在迁移期必须保留，并用显式 `__all__` 描述公共 API；
+- 若旧路径存在 monkeypatch 或模块级可变状态，兼容层必须与新实现共享模块对象，不能只复制名称；
+- dataclass、Enum、TypedDict 移动前必须验证旧 JSON/session/pickle 风险；
+- 删除兼容层前必须完成全仓导入与 monkeypatch 审计；
+- 新实现只放在目标 package，根兼容门面不得继续增长业务逻辑。
 
 ## 3. Python 代码规范
 
@@ -253,6 +277,7 @@ idle -> running -> waiting_permission -> running -> completed
 
 ```bash
 python -m pytest -q
+python -m pytest -q tests/test_architecture.py
 python -m pytest -q tests/test_tty_app.py
 python -m pytest -q tests/test_web_api.py tests/test_web_events.py
 ```
@@ -279,7 +304,7 @@ python -m pytest -q tests/test_web_api.py tests/test_web_events.py
 - 新依赖必须说明用途、维护状态、License 和不可替代性；
 - 禁止把密钥写入仓库、测试 fixture、截图或示例输出；
 - `.env.example` 只提供占位值；
-- 配置优先级和兼容行为由 `minicode/config.py` 统一管理。
+- 配置优先级和兼容行为由 `minicode.config` package 统一管理。
 
 ## 11. Git 与变更管理
 

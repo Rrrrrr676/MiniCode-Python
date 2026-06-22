@@ -215,6 +215,15 @@ def run_headless(prompt: str | None = None, allow_edits: bool = False) -> str:
 
 def main() -> None:
     """CLI entry point for headless mode."""
+    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        print(
+            "usage: minicode-headless [--allow-edits] <prompt>\n\n"
+            "Run one non-interactive MiniCode agent turn.\n\n"
+            "options:\n"
+            "  -h, --help      show this help message and exit\n"
+            "  --allow-edits   approve edits, commands, and out-of-workspace access"
+        )
+        return
     # Strip the --allow-edits flag (handled separately); everything else is the prompt.
     allow_edits = "--allow-edits" in sys.argv
     prompt_args = [arg for arg in sys.argv[1:] if arg != "--allow-edits"]
