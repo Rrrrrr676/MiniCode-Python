@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from typing import Any, Callable
 from minicode.tui.state import AggregatedEditProgress, ScreenState, TtyAppArgs
 from minicode.cli.commands import try_handle_local_command, find_matching_slash_commands
@@ -287,7 +288,6 @@ def _handle_input(
     """Returns True if /exit was typed."""
     if state.is_busy:
         # Animated spinner during tool execution
-        import time
         spinners = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
         tick = int(time.monotonic() * 8) % len(spinners)
         spin = spinners[tick]

@@ -427,6 +427,42 @@ def test_tty_input_passes_and_persists_context_manager(tmp_path, monkeypatch) ->
     assert state.agent_result["messages"][-1] == {"role": "assistant", "content": "done"}
 
 
+def test_tty_agent_tool_callbacks_can_measure_elapsed_time(tmp_path, monkeypatch) -> None:
+    """A normal submission must bind the clock used by nested tool callbacks."""
+
+    def fake_run_agent_turn(**kwargs):
+        kwargs["on_tool_start"]("read_file", {"path": "README.md"})
+        kwargs["on_tool_result"]("read_file", "project contents", False)
+        return [*kwargs["messages"], {"role": "assistant", "content": "done"}]
+
+    monkeypatch.setattr(input_handler_module, "run_agent_turn", fake_run_agent_turn)
+    monkeypatch.setattr(
+        input_handler_module,
+        "_schedule_tool_auto_collapse",
+        lambda *args, **kwargs: None,
+    )
+
+    state = ScreenState(input="Inspect the project", cursor_offset=19)
+    args = TtyAppArgs(
+        runtime={"model": "default"},
+        tools=ToolRegistry([]),
+        model=object(),
+        messages=[{"role": "system", "content": "sys"}],
+        cwd=str(tmp_path),
+        permissions=PermissionManager(str(tmp_path)),
+    )
+
+    assert input_handler_module._handle_input(args, state, lambda: None) is False
+    state.agent_thread.join(timeout=5)
+
+    assert state.agent_result["messages"][-1] == {
+        "role": "assistant",
+        "content": "done",
+    }
+    assert state.tool_start_time is not None
+    assert state.active_tool is None
+
+
 def test_tty_session_command_uses_live_session_snapshot(tmp_path) -> None:
     session = SessionData(
         session_id="session-1234",
